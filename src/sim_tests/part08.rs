@@ -1226,6 +1226,8 @@ pub(crate) fn super_armour_swaps_the_damage_level_in_its_window() {
         let d = combat.data_of(&a);
         a.play("Ez3010", "a000_003010");
         a.t = 0.3;
+        // A pose already stepped to: no old window held (`Actor::held`).
+        a.held = None;
         assert_eq!(crate::combat::damage_motion_level(d, &a, 2), 8, "middle -> minimum");
         assert_eq!(crate::combat::damage_motion_level(d, &a, 1), 8, "small -> minimum");
         assert_eq!(crate::combat::damage_motion_level(d, &a, 3), 3, "large stays");

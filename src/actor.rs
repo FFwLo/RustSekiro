@@ -142,6 +142,16 @@ impl SuperArmor {
     }
 }
 
+/// The old clip's last TAE window, kept while the clip played after it waits for its first step
+/// (`Actor::held`): (clip, prev_t, t) and the hits its attack windows already landed.
+#[derive(Clone, Debug, Default)]
+pub struct Held {
+    pub anim: String,
+    pub prev_t: f32,
+    pub t: f32,
+    pub hits: Vec<(Entity, i64, i32)>,
+}
+
 #[derive(Component)]
 pub struct Actor {
     pub side: Side,
@@ -157,6 +167,11 @@ pub struct Actor {
     /// The clip was played after this tick's `decide` (a hit's reaction in `resolve`): the
     /// tick's `advance` leaves it at 0 (`clear_fresh`).
     pub fresh: bool,
+    /// The TAE window the last `advance` dispatched, kept from a `play` until the new clip takes
+    /// its first step: what the exe's hit step and HKS still see on that frame (`tae_anim`,
+    /// `tae_step`; tools/emu-cases `framewin`, kb/frame-coverage.md "Frame order at a clip
+    /// change").
+    pub held: Option<Held>,
     /// The generator the current clip blends in from while its TAE Blend lasts (the behaviour
     /// graph keeps playing it and mixes its world-from-model in): (clip key, its clock), the key
     /// empty for a procedural state whose motion is `blend_from_vel`. None once the blend is over
@@ -430,6 +445,7 @@ impl Actor {
             t: 0.0,
             prev_t: 0.0,
             fresh: false,
+            held: None,
             blend_from: None,
             blend_from_loops: false,
             blend_from_vel: Vec3::ZERO,
@@ -535,6 +551,14 @@ impl Actor {
             self.blend_t = 0.0;
             self.blend_len = -1.0;
         }
+        // The window the last step dispatched stays live until the new clip's first step: the
+        // ChrActionFlags (module0 +0x70, cleared by FUN_140b27d40 at the start of the next chr
+        // frame and set again by FUN_140b51b70 from that frame's window) and the attack records
+        // (tested by the hit step FUN_1409a0dc0 while the last step dispatched their event). A
+        // second play before a step keeps the first window; the hits it landed go with it.
+        if self.held.is_none() {
+            self.held = Some(Held { anim: self.anim.clone(), prev_t: self.prev_t, t: self.t, hits: std::mem::take(&mut self.hits_done) });
+        }
         self.state = state.to_string();
         self.anim = to;
         self.move_start_clip = None;
@@ -595,6 +619,10 @@ impl Actor {
             return false;
         }
         self.start_at(t);
+        // The continuation shares the first frames of its TAE: the held window's hits are these.
+        if let Some(h) = self.held.as_mut() {
+            h.hits = hits.clone();
+        }
         self.hits_done = hits;
         true
     }
@@ -622,6 +650,30 @@ impl Actor {
     /// exe dispatches every event whose window (prev_t, t] it overlaps (`tae_window::At`).
     pub fn step(&self) -> crate::tae_window::At {
         crate::tae_window::At::Step(self.prev_t, self.t)
+    }
+
+    /// The clip whose TAE window the exe's state holds now (`held`, else the current clip): the hit
+    /// step of the frame after a clip change reads the old clip's flags and attack records, as
+    /// does the HKS of the frame a hit's reaction starts in.
+    pub fn tae_anim(&self) -> &str {
+        self.held.as_ref().map_or(&self.anim, |h| &h.anim)
+    }
+
+    /// That clip's window (`tae_anim`): the last step's.
+    pub fn tae_step(&self) -> crate::tae_window::At {
+        self.held.as_ref().map_or(self.step(), |h|crate::tae_window::At::Step(h.prev_t, h.t))
+    }
+
+    /// An AttackBehavior window of `tae_anim` already landed on this target (defender, judge, start).
+    pub fn hit_done(&self, key: &(Entity, i64, i32)) -> bool {
+        self.held.as_ref().map_or(&self.hits_done, |h| &h.hits).contains(key)
+    }
+
+    pub fn mark_hit(&mut self, key: (Entity, i64, i32)) {
+        match self.held.as_mut() {
+            Some(h) => h.hits.push(key),
+            None => self.hits_done.push(key),
+        }
     }
 
     pub fn procedural(&mut self, state: &str) {
@@ -988,6 +1040,19 @@ pub fn advance(time: Res<Time>, combat: Res<Combat>, mut q: Query<(&mut Actor, &
         // every module on the character's own time (FUN_140b9d1b0 -> FUN_1409f78a0).
         let dt = a.hit_stop.split(real_dt);
         a.clock_dt = Some(dt.max(0.0));
+        // The old clip's window: a reaction played in resolve (`fresh`) waits a tick and the exe
+        // steps the old clip once more in this frame (tools/emu-cases framewin: the deflected
+        // a050_300100 0.283 -> 0.300 on the deflect's frame, its records tested by the next hit
+        // step, its flags read there); a clip played before the step takes its first step now
+        // and the held window goes. gap: a looping old clip is not wrapped at its end.
+        if a.fresh {
+            if let Some(h) = a.held.as_mut() {
+                h.prev_t = h.t;
+                h.t += dt.max(0.0);
+            }
+        } else {
+            a.held = None;
+        }
         if dt <= 0.0 {
             // A turn decided during the hold is drawn (and hit-tested) at once (round 58: the
             // rotation waited for the hold's end).

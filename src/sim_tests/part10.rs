@@ -1358,6 +1358,8 @@ pub(crate) fn the_armour_guard_follows_its_worn_effect() {
         a.resident.retain(|&id| id != 220062);
         a.play("Idle", "a000_000000");
         a.t = 0.5;
+        // A pose already stepped to: no old window held (`Actor::held`).
+        a.held = None;
         let d = combat.data_of(&a);
         let judge = |a: &Actor| crate::combat::shield_block(d, a, crate::combat::event_gates(&combat, a, &[]).as_deref());
         let blow = crate::data::Attack { guard_atk_rate_correction: 300.0, ..Default::default() };

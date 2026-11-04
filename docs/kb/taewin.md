@@ -163,3 +163,15 @@ jump's launch; test `no_gravity_waits_for_the_launch_timer`. kb/movement.md has 
 windows during a blend in a case other than Wolf's idle (needs the whole graph run);
 `finisher_window`, the deflect log's `flick_at` and player.rs `accept` (reads at prev_t) stay
 point tests; the additive layer has no step.
+
+## 2026-11-04: the window on the frame a clip changes (row E2)
+
+tools/emu-cases `framewin` (kb/frame-coverage.md "Frame order at a clip change"): the
+ChrActionFlags are cleared by `FUN_140b27d40` at the start of each chr frame and set from that
+frame's window, so the hit step and the HKS of a frame read the last step's window. A clip asked
+for by the HKS or by a hit's reaction takes its first window in the next frame's step; on the hit's
+frame the exe steps the old clip once more (its window dispatched, its attack records tested by the
+next hit step). Ported as `Actor::held` / `tae_anim` / `tae_step`, read by the hit test in
+combat.rs. This settles the "(0, 0) is a clip played and read before its first step" case for the
+hit test: it now reads the old clip's window; other (0, 0) readers (decide, systems after the
+step) keep the point test at 0.

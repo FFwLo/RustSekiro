@@ -293,9 +293,9 @@ checked a tick after the grab (the absorb now lands in the grab's own tick; the 
 read on the frame before the hit (no + dt). `force_player` primes the pad (`HksPad::prime`): a
 forced state stands for one Wolf was already in, with the buttons already down.
 
-Not covered (gap): the old clip's last step on the frame a reaction starts (the exe steps it once
-more: its root motion is kept through the blend, its TAE window is not); attack windows of a clip
-`decide` replaces in the same tick; enemies' frame labels (their AI decides in `decide`, the exe's
+Not covered (gap): (the old clip's last step on the frame a reaction starts and the windows of a
+clip `decide` replaces in the same tick: done 2026-11-04, "Frame order at a clip change" below);
+enemies' frame labels (their AI decides in `decide`, the exe's
 HKS of the frame before, so only Wolf's pad needed the delay; the General's frames were logged but
 not compared with Sv1's); hit-stop frames (done 2026-11-04, kb/modticks.md "Which frame a hit's stop starts on"); (a bullet's hit timing: traced 2026-11-04, "A bullet's
 hit timing" below); other TAE events `decide` read a tick after the step (one-shot
@@ -536,3 +536,66 @@ touch, not the touch); amounts
 (posture 14 / 21 / 36 come from the Pellet's record, not a shuriken throw's attack power); a
 deflected or guarded bullet; bullets hitting the map; other bullet kinds (fans, interval
 children, growing radius, homing).
+
+## Frame order at a clip change (2026-11-04, framewin, row E2)
+
+How: `emu-cases <exe> extracted/emu framewin [framewin_<case>...] --snapshot <dir>`
+(`tools/emu-cases/src/framewin.rs`) runs `hits`' world frames (hit step, pre tasks, the General's
+and Wolf's chr frames, post tasks) and logs per frame each chr's TAE updates `FUN_140b5c920`, the
+ChrActionFlag words module0 +0x70 (u64) and ActionCtrl `[[chr+0x50]+0x50]` +0x1f8 at the frame's
+start, after the hit step and after the chr frames, every write to Wolf's +0x70 (stage, writer),
+whose records the hit step's shape test `FUN_14099b3f0` takes (record +0x2c the owner's handle)
+and the attack issues `FUN_1409a1290` by stage. Cases (snapshot D:/emu-snap-e10, the General's
+slash lands on frame 40): g_open, g_guard, g_release38-41 (guard let go on that frame), w_deflect
+(Wolf's slash deflected on 30), g_trade10 / 14 / 18 (Wolf presses attack on that frame into the
+slash). Tests in `src/sim_tests/emu_framewin.rs`.
+
+**What the exe does.**
+- The ChrActionFlags are cleared at the start of each chr frame (`FUN_140b27d40`, before the
+  Havok step) and set again by `FUN_140b51b70` from that frame's TAE window; nothing touches them
+  between chr frames. So the hit step of frame N reads the flags of frame N - 1's window (every
+  case: start-of-frame words = the last chr frame's), and so does that frame's HKS.
+- Attack records: issued when the step enters an AttackBehavior (`FUN_1409a1290` inside the chr
+  frame), shape-tested by the hit steps that follow while the steps keep dispatching the event;
+  the first hit step after a step that no longer dispatches it drops them (record update, no
+  test).
+- A hit's reaction (asked for in the hit step of frame h): frame h's step still steps the OLD clip
+  on from where it was, with its TAE window (idle 3.050 -> 3.067; the guard hold a050_002000
+  0.150 -> 0.167; the deflected a050_300100 0.283 -> 0.300); the reaction takes [0, dt] in frame
+  h + 1. The old clip's flags (the guard's ShieldBlock 0x4, the slash's 0xa200) are what the hit
+  step of h + 1 reads, and its attack records are tested there once more (w_deflect: Wolf's two
+  records tested on 31, gone on 32). g_trade14: the slash's AttackBehavior ENTERS in the step of
+  the frame Wolf is hit (issues on 40) and its records are tested on 41, while Wolf is already in
+  a000_100202.
+- A clip the HKS asks for (frame N - 1) takes its first window in frame N's step, after frame N's
+  hit step: g_release39 lets go on 39, the release a050_203010 steps (0, 0.017) on 40, and the hit
+  step of 40 reads the hold's window of 39 (guarded).
+
+**What changed in Sv1.** `Actor::held` (`Held`): `play` keeps the window the last `advance`
+dispatched (clip, prev_t, t, and the hits its attack windows landed) until the new clip's first
+step; `advance` drops it then, or for a reaction played in resolve (`fresh`) steps the old window
+on by the tick's dt (the exe's extra step). `tae_anim` / `tae_step` read it, `hit_done` /
+`mark_hit` keep one window's hits apart from the new clip's. Every TAE read of the hit test in
+combat.rs moved to them: the attacker's AttackBehavior windows, the defender's ShieldBlock judge,
+guard SpEffects, invincibility (954 / ChrActionFlags in `dodged`), MikiriCounter, flag 41 hit
+stop, 24 no damage motion, 226 knockback percent, 72 recoil, damage cuts, the additive guard ref.
+Before: the clip `decide` played was read at (0, 0) by the same tick's resolve (its events at 0),
+and a reaction from resolve was read at (0, 0) for two resolves, the old clip's last window lost
+(a deflected swing was not tested again, a guard's ShieldBlock gone on the next hit).
+
+Tests: `the_old_clip_keeps_its_window_on_the_frame_a_reaction_starts` (g_open, g_guard: the
+windows the hit steps of h, h + 1, h + 2 read are old, old stepped on, the reaction from 0, in the
+exe and in Sv1; the guard's ShieldBlock on h + 1 in both), `a_deflected_swing_is_tested_once_more`
+(w_deflect: the exe tests Wolf's records on h + 1 only; Sv1's resolve after the deflect reads the
+slash window with its AttackBehavior dispatched, one deflect), `a_clip_decide_plays_is_read_after_the_hit_test`
+(g_release39: the hit test of the tick `decide` plays a050_203010 reads the hold's window and
+blocks). All three fail with `held` ignored.
+
+Not covered (gap): `decide` itself still reads the current clip (the reaction at (0, 0) on the
+tick after a hit; the exe's HKS of frame h is still the old state's and reads the old window: in
+Sv1 the reaction's state already runs in that decide, a frame early); ActionCtrl +0x1f8 is logged
+(guard hold 0x42, release 0x40, reaction 0x40) but its bits are not ported; a looping old clip's
+extra step past its end is not wrapped; a reaction in a hit stop (the old window stepped by 0) and
+lod-skipped enemies were not run; g_trade10 / 18 were logged but not compared (Sv1's swing and
+the slash do not meet on the same frames); the General's own windows when Wolf's hit replaces his
+clip; enemies' frame labels as before.

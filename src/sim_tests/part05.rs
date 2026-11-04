@@ -1444,11 +1444,14 @@ pub(crate) fn an_air_art_shrugs_off_blue_lightning() {
             .expect("an air art with 100235");
         a.play("AirArt", &key);
         a.t = t;
+        // A pose already stepped to: no old window held (`Actor::held`).
+        a.held = None;
         let blue = crate::data::Attack { sp_attribute: 10, ..Default::default() };
         let strong = crate::data::Attack { sp_attribute: 6, ..Default::default() };
         assert!(crate::combat::weak_charge_armour(&combat, &a, &blue), "{key} at {t}");
         assert!(!crate::combat::weak_charge_armour(&combat, &a, &strong));
         a.play("Idle", "a000_000000");
+        a.held = None;
         assert!(!crate::combat::weak_charge_armour(&combat, &a, &blue), "not outside the art");
     });
 }
