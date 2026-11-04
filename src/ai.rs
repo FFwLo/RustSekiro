@@ -409,6 +409,7 @@ struct Consts {
     int_sp: f64,
     int_sp_off: f64,
     int_sound: f64,
+    int_lose_sight: f64,
     point_initial: f64,
     point_init_pose: f64,
     point_move_point: f64,
@@ -431,6 +432,8 @@ struct AiState {
     cmd: Command,
     log: Vec<String>,
     warned: HashSet<String>,
+    /// The current target was visible at the last tick (the exe's AI +0x746d, FUN_1405b48e0).
+    was_visible: bool,
     timers: HashMap<i64, f64>,
     numbers: HashMap<i64, Value>,
     snum: HashMap<String, Value>,
@@ -2141,6 +2144,12 @@ fn interrupt_goals(vm: &mut Vm, st: &mut AiState, kind: f64, sp: f64) -> LuaResu
     handled
 }
 
+/// INTERUPT_LoseSightTarget's edge (exe FUN_1405b48e0): the target `was` visible at the last
+/// think and is not `now`; `was` takes `now`.
+pub(crate) fn lose_sight(was: &mut bool, now: bool) -> bool {
+    std::mem::replace(was, now) && !now
+}
+
 /// The logic-level interrupt chain of a table-logic enemy (exe FUN_1405d3fd0):
 /// InterruptTableLogic(ai, goal, logic, kind), then COMMON_Interrupt, then
 /// InterruptTableLogic_Common - where common_table_ai_common.lua:247 turns a new sound into the
@@ -2313,6 +2322,7 @@ impl Brain {
             cmd: Command::default(),
             log: Vec::new(),
             warned: HashSet::new(),
+            was_visible: false,
             timers: HashMap::new(),
             numbers: HashMap::new(),
             snum: HashMap::new(),
@@ -2351,6 +2361,7 @@ impl Brain {
                 int_sp: 43.0,
                 int_sp_off: 44.0,
                 int_sound: 46.0,
+                int_lose_sight: 31.0,
                 point_initial: 100.0,
                 point_init_pose: 111.0,
                 point_move_point: 103.0,
@@ -2383,6 +2394,7 @@ impl Brain {
             int_sp: c("INTERUPT_ActivateSpecialEffect", 43.0),
             int_sp_off: c("INTERUPT_InactivateSpecialEffect", 44.0),
             int_sound: c("INTERUPT_ChangeSoundTarget", 46.0),
+            int_lose_sight: c("INTERUPT_LoseSightTarget", 31.0),
             point_initial: c("POINT_INITIAL", 100.0),
             point_init_pose: c("POINT_INIT_POSE", 111.0),
             point_move_point: c("POINT_MOVE_POINT", 103.0),
@@ -2489,6 +2501,17 @@ impl Brain {
         if s.sound_new {
             let k = st.k.int_sound;
             interrupt_logic(vm, st, k)?;
+        }
+        // INTERUPT_LoseSightTarget (31): the target seen at the last tick is not now (exe
+        // FUN_1405b48e0 at each think: AI +0x746d holds FUN_140623a20's "visible" for the current
+        // target; the normal target's is its seen flag, node +0x40, set by the sight search).
+        // Checked against the exe (aiint lose): raised once, the frame the search misses; none
+        // when it is seen again. 102000_battle.lua flips its SidewayMove side on it.
+        // gap: a sound / memory / indication target's "visible" (FUN_140623a20's other branches)
+        // and its end were not run in the emulator: only the normal target's edge is raised.
+        if lose_sight(&mut st.was_visible, s.visible) {
+            let k = st.k.int_lose_sight;
+            interrupt_goals(vm, st, k, 0.0)?;
         }
         // A map-event AI command (INTERUPT_EventRequest 39: bit 39 of the update's interrupt
         // mask, set by FUN_1405b49e0 from the request's received bit, so for one update per

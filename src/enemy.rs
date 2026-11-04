@@ -1873,6 +1873,12 @@ pub struct AiSound {
     /// Heard by the owner's side only (`AiSounds::call`: a spotter's shout to its comrades; not
     /// a game flag).
     pub friends_only: bool,
+    /// AiSoundParam rank and the record's radius (the merge key, `AiSounds::emit`).
+    pub rank: i64,
+    pub radius: f32,
+    /// Wolf's TAE CreateAISound (237) record (`AiSounds::wolf_tae`): heard through
+    /// `wolf_sounds`, which keeps its own reach rule, not `ai_sound_heard`.
+    pub tae: bool,
 }
 
 /// The call an enemy gives as it spots Wolf (think): AiSoundParam 2000000.
@@ -1894,7 +1900,7 @@ fn death_noise(combat: Res<Combat>, q: Query<(Entity, &Enemy, &Actor, &Transform
 }
 
 /// The exe's sound-record counter (DAT_143d547b0, FUN_14060f840). Ours starts past every
-/// AiSoundParam id, which Wolf's TAE sounds use as their serial.
+/// AiSoundParam id (a TAE sound with no record falls back to its id).
 static SOUND_SERIAL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1 << 32);
 
 /// Every live trigger region (RegisterTriggerRegion, ai.rs TriggerRegion): one store for all
@@ -1903,17 +1909,48 @@ static SOUND_SERIAL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 pub struct TriggerRegions(pub Vec<crate::ai::TriggerRegion>);
 
 impl AiSounds {
-    /// Adds a sound (ids <= 0 and rows of radius 0 are none, FUN_14060f290 / 14060f840); the same
-    /// owner's same sound is refreshed (FUN_14060fa90 merges an owner's sound of one rank).
+    /// Adds a sound (ids <= 0 and rows of radius 0 are none, FUN_14060f290 / 14060f840). A live
+    /// record of the same owner and rank, its spot within the mean of the two radii and its
+    /// radius within 1 m, is refreshed instead (FUN_14060fa90: spot, radius and life; it keeps
+    /// its serial and its first id, so GetLatestSoundTargetID stays the first sound's). Checked
+    /// against the exe (aiint): a sound raised again in its life keeps its serial; raised after
+    /// its life ran out it is a new record with a new serial.
     pub fn emit(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Option<Entity>, team: Option<i64>) {
+        self.emit_record(combat, id, pos, owner, team, false);
+    }
+
+    fn emit_record(&mut self, combat: &Combat, id: i64, pos: Vec3, owner: Option<Entity>, team: Option<i64>, tae: bool) {
         let row = combat.param("AiSoundParam", id);
-        if id <= 0 || row["radius"].as_f64().unwrap_or(0.0) <= 0.0 {
+        let radius = row["radius"].as_f64().unwrap_or(0.0) as f32;
+        if id <= 0 || radius <= 0.0 {
             return;
         }
         let life = row["lifeFrame"].as_f64().unwrap_or(0.0).max(1.0 / 30.0) as f32;
-        let old = self.0.iter().position(|s| s.owner == owner && s.id == id).map(|i| self.0.remove(i).serial);
-        let serial = old.unwrap_or_else(|| SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new(), friends_only: false });
+        let rank = row["rank"].as_i64().unwrap_or(0);
+        if let Some(s) = self.0.iter_mut().find(|s| s.owner == owner && s.tae == tae && s.rank == rank && s.pos.distance(pos) < (s.radius + radius) * 0.5 && (s.radius - radius).abs() < 1.0) {
+            s.pos = pos;
+            s.radius = radius;
+            s.life = life;
+            return;
+        }
+        let serial = SOUND_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.push(AiSound { id, pos, owner, team, life, serial, owner_alert: true, owner_groups: Vec::new(), friends_only: false, rank, radius, tae });
+    }
+
+    /// Wolf's TAE CreateAISound (237) sounds of this frame as records at his feet (the TAE
+    /// handlers FUN_140b4fe00 / FUN_140b50930 -> FUN_14060efa0 -> FUN_14064a5f0), refreshed
+    /// while their events stay on (walk / run loops: one record, one serial).
+    pub fn wolf_tae(&mut self, combat: &Combat, pa: &Actor, at: Vec3) {
+        for id in wolf_tae_ids(combat, pa) {
+            self.emit_record(combat, id, at, None, None, true);
+        }
+    }
+
+    /// The record of a TAE sound `wolf_sounds` found in reach: the live one of its rank and
+    /// radius (the merge key).
+    fn tae_record(&self, combat: &Combat, id: i64, rank: i64) -> Option<&AiSound> {
+        let radius = combat.param("AiSoundParam", id)["radius"].as_f64().unwrap_or(0.0) as f32;
+        self.0.iter().filter(|s| s.tae && s.rank == rank && (s.radius - radius).abs() < 1.0).max_by_key(|s| s.serial)
     }
 
     /// `emit` for a call to the owner's comrades only (`think`'s spot call): its foes (a maddened
@@ -2344,6 +2381,15 @@ fn skills_in_force<'a>(skills: &'a [crate::data::SpEffect], active: &[&crate::da
         .collect()
 }
 
+/// The AiSoundParam ids of Wolf's TAE CreateAISound (237) events on this step (the same events
+/// `wolf_sounds` checks for reach).
+fn wolf_tae_ids(combat: &Combat, pa: &Actor) -> Vec<i64> {
+    let (key, t) = pa.shown_clip(&combat.player);
+    let Some(an) = combat.player.anim(&key) else { return Vec::new() };
+    let started = |e: &&crate::data::Event| !pa.anim.is_empty() && crate::tae_window::starts(e.start, pa.prev_t, pa.t);
+    an.events.iter().filter(|e| e.kind == 237 && (e.active(t) || started(e))).filter_map(|e| e.arg_i64("AISoundID")).collect()
+}
+
 /// The AI sounds Wolf's TAE made this step (CreateAISound, TAE 237): (AiSoundParam id, rank)
 /// of each the listener `la` (at `listener`, NpcThinkParam `think`) hears. Rows with
 /// bSpEffectEnable scale the radius by Wolf's SpEffects' hearingSearchEnemyRate (Covert B
@@ -2619,6 +2665,7 @@ fn think(
         s.life -= dt;
         s.life > 0.0
     });
+    ai_sounds.wolf_tae(&combat, pa, ptf.translation);
     let alert: HashMap<Entity, (bool, Vec<i64>)> = q.iter().map(|(ent, e, ..)| (ent, (matches!(e.targeting.state, stealth::BATTLE | stealth::FIND), e.placement.clone()))).collect();
     for s in &mut ai_sounds.0 {
         if let Some(o) = s.owner {
@@ -2929,20 +2976,24 @@ fn think(
         // picked. (Inferred: the normal target as the type-1 entry.)
         let listening = e.targeting.normal.is_none();
         let listening_wolf = listening && !charmed && ear_rate > 0.0;
+        // Every record in reach this frame, then one pick (stealth::Targeting::listen).
+        let mut heard = Vec::new();
         for (id, rank) in wolf_sounds(&combat, pa, ptf.translation, &a, tf.translation, think_row, &skills).into_iter().filter(|_| listening_wolf) {
-            e.targeting.hear(think_row, seen.pos, id, rank);
+            let rec = ai_sounds.tae_record(&combat, id, rank);
+            heard.push(stealth::Heard { pos: seen.pos, id: rec.map_or(id, |r| r.id), rank, serial: rec.map_or(id, |r| r.serial) });
         }
         let my_team = crate::combat::team_of(&combat, &a);
-        for s in ai_sounds.0.iter().filter(|_| listening) {
+        for s in ai_sounds.0.iter().filter(|s| listening && !s.tae) {
             // A comrade's spot call is for those not yet fighting: one already in battle keeps its
             // fight (a soldier at a maddened dog's throat, test a_maddened_dog_bites_the_soldier).
             if s.friends_only && e.targeting.state >= stealth::FIND {
                 continue;
             }
             if let Some((id, rank)) = ai_sound_heard(&combat, s, entity, my_team, &a, tf.translation, think_row, &e.placement) {
-                e.targeting.hear_record(think_row, s.pos, id, rank, s.serial);
+                heard.push(stealth::Heard { pos: s.pos, id, rank, serial: s.serial });
             }
         }
+        e.targeting.listen(think_row, &heard);
         let was = e.targeting.state;
         // The sight origin: dummy 500's spot at the feet height (stealth::eye_point; the
         // fallback pushes the root forward by NpcParam hitRadius, gap: the exe's physics radius).

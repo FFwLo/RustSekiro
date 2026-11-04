@@ -46,6 +46,7 @@ mod acttrace;
 mod items;
 mod atkrec;
 mod aimove;
+mod aiint;
 mod air;
 mod hits;
 mod brkwin;
@@ -919,6 +920,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("items")) {
         return items::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("aiint")) {
+        return aiint::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("aimove")) {
         return aimove::run(&|| Emu::new(exe, snap()), out, &want);

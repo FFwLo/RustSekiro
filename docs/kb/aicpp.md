@@ -180,3 +180,69 @@ Not covered: sound targets and the interrupt flags the Lua reads (no sound or in
 raised in these runs); M +0x60 stayed empty; the run's route point off the straight line; which
 act 102000_battle picks (its GetRandam draws are the exe's); a clip with no SetTurnSpeed
 (turnVellocity kept as the fallback, untraced); SidewayMove with walk false (no script passes it).
+
+## 2026-11-04 Interrupts and sound targets (aiint, row E11)
+
+How: `tools/emu-cases/src/aiint.rs`, whole world frames as aimove (AI on, the General updated
+every frame) with the goal tree's interrupt dispatch hooked (FUN_1405ada60: AI +0x40, rdx = the
+mask AI +0x68; bit n = INTERUPT n of common_ai_define.lua). The mask is gathered each think by
+FUN_14060c460: the targeting flags (FUN_14061f0a0: ts +0x150 bits -> 1, 6-12, 13 / 14, 20, 24,
+30, 34, 47, 52; the target list's changed flags -> 46 sound, 53 indication, 55 corpse; a state
+change that is not a gain -> 18), the AI +0x7460 block (FUN_1405b48e0: 21, 22, 27-29, 45, 48,
+49, 54 and 31), observe areas (FUN_14059e760: 16 / 40), the SpEffect watch list (FUN_1405ace40:
+43 / 44), the event request (FUN_1405b49e0: 39), 15, 25, 26, 33, 38, 57 and the rest. AI sounds raised as the TAE's CreateAISound does
+(FUN_1407577b0: source {1, Wolf's handle, -1}, id, FUN_14064a5f0(manager [0x143d55070], pos,
+source, extra, id)); the records live in each map area's list (area +0xb8, 0x70 a record:
++0x10 spot, +0x2c radius, +0x30 life, +0x3c rank, +0x40 id, +0x48 serial u16; one copy per
+area, each with its own serial); they age in the area's AI update (FUN_140652020 ->
+FUN_140611a00), which the harness runs after each frame. Scenarios: `snd` (Wolf unseen on his
+ledge; 2140 rank 0 at 2 m, raised again in its life and after it, rank 1 2100 / 2110, rank 0
+under rank 1, 1000 out of reach), `snd_two` (two rank 0 sounds in one frame, refreshes), `lose`
+(BATTLE, Wolf moved behind the General and back). 370 frames, about 6 min.
+
+The listener (FUN_140624b70, every frame while no character target is held): a fresh slot is
+offered every record in reach (FUN_140610470 -> FUN_140610b30: team flags, reach), rank 0
+records only while the held sound's rank < 1, rank 1 while < 2 (FUN_14064c540 channel = rank);
+the slot keeps the higher rank, of one rank the higher serial (FUN_1406101a0: new - held > 0).
+The pick goes into the list's kind 3 node (FUN_14062a2a0: slot at node +0x70: serial +0x78, spot
++0x80, id +0x94, rank +0x98; forget +0x2c refreshed each frame it is heard, 149.967 after the
+frame's countdown); a serial other than the node's sets the changed flag -> 46 once. Records
+(FUN_1406113b0): a sound raised again merges into a live record of the same source and rank whose
+spot is within the mean of the two radii and whose radius is within 1 m (FUN_14060fa90: spot,
+radius and life renewed, serial and first id kept); else a new record (FUN_14060f840, global
+serial DAT_143d547b0). Seen: both sounds of one frame -> the newer (46 once); a refresh in its
+life -> no 46; the same id after its life ran out -> a new record and 46 (Sv1 had none: it
+compared ids); a newer record of one rank wins over the held one still heard; rank 0 under a held
+rank 1 -> ignored; the General (logic 102000, chuboss reaction) answers 46 with
+InterruptTableLogic_Common's ListenSound (Wait, EndureAttack 700 / 710 for rank 1), then
+Replanning while timer 11 / 12 runs.
+
+LoseSightTarget (31): FUN_1405b48e0 keeps, per think, whether the current target is visible
+(FUN_140623a20; for the normal target its seen flag, node +0x40, set by the sight search) and
+raises 31 when it was and is not now. In `lose` it came once per seen -> unseen edge (f71, f118:
+the searches that missed), nothing when Wolf was seen again. Sv1 never raised 31; the General's
+Goal.Interrupt uses it to flip SidewayMove (102000_battle.lua). Other bits seen in these runs and
+not read by the General's scripts: 47 (ts +0x150 bit 17) and 15.
+
+Fixed:
+- `stealth::Targeting::listen`: one pick per frame from every record heard (rank gate, then
+  rank, then serial), 46 on a serial change (was: each sound offered in turn, the last one kept,
+  46 on an id change).
+- `enemy::AiSounds::emit`: the exe's merge (owner, rank, mean radius, 1 m) instead of "same owner
+  and id"; Wolf's TAE 237 sounds are records too (`AiSounds::wolf_tae`, refreshed while the
+  event is on: a walk keeps one serial; stopping past the life and walking again is a new one),
+  heard through `wolf_sounds`' reach rule.
+- `ai.rs`: INTERUPT_LoseSightTarget (31) to the goals on the normal target's seen -> unseen edge
+  (`ai::lose_sight`, AiState `was_visible`).
+Tests `sound_targets_match_the_exe` (held id / rank, the 46 frames, the live records and the
+serial identity on 210 frames) and `lose_sight_interrupt_matches_the_exe`.
+
+Not covered: ranks >= 2 (FUN_140628230 / FUN_140629f10 channels; 7400 is rank 3), the bCallFriend
+/ team branches of FUN_140610470 with an NPC source, the record copies per map area (Sv1 has
+one); when in the frame the records age (the area update was not placed in the frame order); a
+sound / memory / indication target's "visible" for 31 and 31 when a target ends (only the normal
+target's edge is raised); the other mask bits (1, 6-10, 13 / 14, 18, 20, 30, 34, 47, 52, 53, 55,
+15, 21 / 22, 27-29, 45, 54) are listed, not raised by Sv1 or compared; IsInterupt's binding read
+as a mask test, not hooked; whether the TAE emits every frame of an event or once (the
+handlers FUN_140b4fe00 / FUN_140b50930 were not run); the General's goals after 46 compared by
+eye only (anim 700 / 710), not frame by frame against our Lua.

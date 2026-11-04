@@ -901,6 +901,13 @@ More of the replay (same day):
   was picked (176 replans in 400 ticks). The exe's 46 is a held sound record's serial changing
   (FUN_14062a2a0 -> FUN_140612980 compares the record serial, FUN_14060f840's global counter;
   read and cleared each tick by FUN_14061f0a0, bit 46). enemy.rs `listening`.
+- 2026-11-04 (E11, aiint, checked in the emulator; kb/aicpp.md): the listener picks once a frame
+  from every record in reach (higher rank, then the newer serial; rank 0 only under a held rank
+  < 1), and 46 is a serial change, not an id change: the same sound raised again after its life
+  ran out is a new record and raises 46 (Sv1 kept quiet). Records merge as the exe's (owner, rank,
+  spot within the mean radius, radius within 1 m; the first id kept); Wolf's TAE 237 sounds are
+  records too (`AiSounds::wolf_tae`). INTERUPT_LoseSightTarget (31) now reaches the goals on the
+  normal target's seen -> unseen edge (102000_battle.lua flips its SidewayMove on it).
 - Fix: an EndureAttack goal's request (Goal.Parry's guard / deflect, the HKS's env 123, taken
   first by c9997 ExecAIAction) starts while the clip's TAE flag 122 is on (exe FUN_140b36410: the
   cancel slots 123-125 need flags 122-124). The hit reaction a000_008010 opens 122 at 0.23 s and

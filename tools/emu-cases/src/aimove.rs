@@ -20,11 +20,11 @@ use serde_json::{json, Value};
 use super::aicpp::{ai_chain, f32s, physics, pos, try_u64, WORLD_CHR_MAN};
 use super::{proxy, turn, uc, Emu};
 
-const CHR_FRAME: u64 = 0x1_40a4_b570;
+pub(super) const CHR_FRAME: u64 = 0x1_40a4_b570;
 const ENEMY_VT: u64 = 0x1_42a2_7f28;
 const MENU_STATE: u64 = 0x1_408c_58e0;
 /// AddSubGoal's core (goal, id, life, params 0-4 (dwords), floats 5..): FUN_1405ce510.
-const ADD_SUB_GOAL: u64 = 0x1_405c_e510;
+pub(super) const ADD_SUB_GOAL: u64 = 0x1_405c_e510;
 /// The manipulator's request copy (AI +0x7430 -> ActionRequest +0x170), after the think.
 const REQUEST_COPY: u64 = 0x1_407e_6570;
 /// The move mode of the current goal (FUN_1406040b0(ai)): 4 = along the path (FUN_1409eeb40).
@@ -32,8 +32,8 @@ const MOVE_MODE: u64 = 0x1_4060_40b0;
 /// The search interval scheduler: (ring = DAT_143d547d8 + 0x28, seconds) -> seconds.
 const SCHED: u64 = 0x1_4061_4be0;
 const SCHED_GLOBAL: u64 = 0x1_43d5_47d8;
-const TASKS_PRE: [u64; 2] = [0x1_40a5_09f0, 0x1_40a4_db20];
-const TASKS_POST: [u64; 2] = [0x1_40a5_0880, 0x1_40a4_88b0];
+pub(super) const TASKS_PRE: [u64; 2] = [0x1_40a5_09f0, 0x1_40a4_db20];
+pub(super) const TASKS_POST: [u64; 2] = [0x1_40a5_0880, 0x1_40a4_88b0];
 const DT: f32 = 1.0 / 30.0;
 
 /// (frame, goal id, life bits, params raw) of each AddSubGoal.
@@ -75,7 +75,7 @@ extern "C" fn on_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void
 }
 
 /// The General (chr +0x6c == 1020).
-fn general(emu: &mut Emu) -> u64 {
+pub(super) fn general(emu: &mut Emu) -> u64 {
     let wcm = emu.peek_u64(WORLD_CHR_MAN);
     for off in (0..0x2000).step_by(8) {
         let Some(p) = try_u64(emu, wcm + off) else { continue };
@@ -93,13 +93,13 @@ fn general(emu: &mut Emu) -> u64 {
     panic!("no General in the snapshot");
 }
 
-fn anim(emu: &mut Emu, chr: u64) -> i64 {
+pub(super) fn anim(emu: &mut Emu, chr: u64) -> i64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     let m = emu.peek_u64(bag + 0x10);
     i32::from_le_bytes(emu.peek(m + 0xf8)) as i64
 }
 
-fn i32_at(emu: &mut Emu, at: u64) -> i32 {
+pub(super) fn i32_at(emu: &mut Emu, at: u64) -> i32 {
     i32::from_le_bytes(emu.peek(at))
 }
 
@@ -157,7 +157,7 @@ extern "C" fn on_force(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_voi
     }
 }
 
-fn setup(emu: &mut Emu) {
+pub(super) fn setup(emu: &mut Emu) {
     emu.limit = 500_000_000;
     emu.raw_write(0x1_43c1_d520, &1u32.to_le_bytes());
     emu.raw_write(proxy::LONGJMP, proxy::PLAIN_LONGJMP);

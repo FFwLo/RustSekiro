@@ -226,8 +226,16 @@ pub struct Sound {
     pub id: i64,
     pub rank: i64,
     /// The sound record's serial (the exe's global counter, FUN_14060f840):
-    /// GetLatestSoundTargetInstanceID. Wolf's TAE sounds use their AiSoundParam id (one record
-    /// per id, as for `sound_new`); NPC sounds their AiSounds serial.
+    /// GetLatestSoundTargetInstanceID (enemy.rs AiSounds, Wolf's TAE sounds too).
+    pub serial: i64,
+}
+
+/// A sound record one listener hears this frame (`Targeting::listen`).
+#[derive(Clone, Copy, Debug)]
+pub struct Heard {
+    pub pos: Vec3,
+    pub id: i64,
+    pub rank: i64,
     pub serial: i64,
 }
 
@@ -379,24 +387,33 @@ impl Targeting {
         self.meter = None;
     }
 
-    /// An AI sound reached the enemy: a sound target at its source (SoundTargetForgetTime).
-    /// A held sound of a higher rank is kept: the exe listener takes rank 0
-    /// sounds only with no sound target or one of rank < 1, rank 1 only under rank 2, so Wolf's
-    /// footsteps (rank 0) do not overwrite a guard break's IMPORTANT sound 5000 (round 25).
+    /// One sound record (a single pass of `listen`, its serial the id: tests).
+    #[cfg(test)]
     pub fn hear(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64) {
-        self.hear_record(think, pos, id, rank, id);
+        self.listen(think, &[Heard { pos, id, rank, serial: id }]);
     }
 
-    /// `hear` for a sound record with its own serial (AiSounds).
-    pub fn hear_record(&mut self, think: &Value, pos: Vec3, id: i64, rank: i64, serial: i64) {
-        if self.sound.is_some_and(|s| s.rank > rank) {
-            return;
+    /// The listener pass of one frame (exe FUN_140624b70, every frame while no character target
+    /// is held): every record in reach is offered to a fresh slot (FUN_140610b30), which keeps the
+    /// higher rank, and of one rank the newer record (serial FUN_1406101a0: new - held > 0); the
+    /// records of a rank are scanned only under a held sound of no higher rank (rank 0 while the
+    /// held rank < 1, rank 1 while < 2: FUN_14064c540 channels 0 / 1), so Wolf's footsteps (rank
+    /// 0) do not overwrite a guard break's IMPORTANT sound 5000 (round 25). The pick becomes the
+    /// sound target (FUN_14062a2a0: its spot, id, rank, serial; forget SoundTargetForgetTime,
+    /// refreshed each frame it is heard); a serial other than the held one raises
+    /// INTERUPT_ChangeSoundTarget (46: the list's changed flag, FUN_14061cd20 / FUN_140612980).
+    /// Checked against the exe (aiint): two records in one frame -> the newer; a record refreshed
+    /// in its life keeps its serial (no 46); the same id raised again after its life ran out is a
+    /// new record (46); a newer record of the same rank wins over the held one still heard.
+    /// gap: ranks >= 2 go through other channels (FUN_140628230 / FUN_140629f10, not traced):
+    /// taken here as rank 1 is.
+    pub fn listen(&mut self, think: &Value, heard: &[Heard]) {
+        let held = self.sound.map(|s| s.rank);
+        let pick = heard.iter().filter(|h| held.is_none_or(|r| r <= h.rank)).max_by_key(|h| (h.rank, h.serial));
+        if let Some(h) = pick {
+            self.sound_new |= self.sound.is_none_or(|s| s.serial != h.serial);
+            self.sound = Some(Sound { pos: h.pos, forget: f(think, "SoundTargetForgetTime"), id: h.id, rank: h.rank, serial: h.serial });
         }
-        // The exe's "sound target changed" flag (FUN_14062a2a0 -> interrupt 46,
-        // INTERUPT_ChangeSoundTarget). gap: the exe compares the sound's serial; refreshed
-        // walk / run events are taken as one sound, so a new AiSoundParam id is "new".
-        self.sound_new |= self.sound.is_none_or(|s| s.id != id);
-        self.sound = Some(Sound { pos, forget: f(think, "SoundTargetForgetTime"), id, rank, serial });
     }
 
     pub fn clear_enemy(&mut self) {
