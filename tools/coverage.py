@@ -769,6 +769,17 @@ def main():
     print('characters:', dict(lv))
     print('kinds:', dict(kinds))
     print('systems:', dict(sl))
+    # Every fighting character has a board row: name the ones that still need one (tools/board_rows.py).
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import board_rows
+    try:
+        new = board_rows.missing(board_rows.board_text())
+    except SystemExit as e:
+        new = []
+        print('board rows not checked:', e)
+    if new:
+        print('%d fighting characters have no board row; add them: python tools/board_rows.py --write '
+              '<board worktree>/WORK.md' % len(new))
 
 
 if __name__ == '__main__':
