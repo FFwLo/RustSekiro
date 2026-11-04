@@ -49,10 +49,12 @@ fn rd(uc: uc::Engine, at: u64) -> u64 {
 }
 
 extern "C" fn on_goal(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void) {
-    let (mut rdx, mut r8, mut r9, mut rsp) = (0u64, 0u64, 0u64, 0u64);
+    let (mut rdx, mut r9, mut rsp) = (0u64, 0u64, 0u64);
+    // The life is a float in xmm2 (r8 is never read): the low lane of the 16-byte register.
+    let mut xmm2 = [0u8; 16];
     unsafe {
         uc::uc_reg_read(uc, uc::RDX, &mut rdx as *mut u64 as _);
-        uc::uc_reg_read(uc, uc::R8, &mut r8 as *mut u64 as _);
+        uc::uc_reg_read(uc, uc::XMM0 + 2, xmm2.as_mut_ptr() as _);
         uc::uc_reg_read(uc, uc::R9, &mut r9 as *mut u64 as _);
         uc::uc_reg_read(uc, uc::RSP, &mut rsp as *mut u64 as _);
     }
@@ -62,7 +64,7 @@ extern "C" fn on_goal(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void
         p.push(rd(uc, rsp + 0x28 + 8 * i) as u32);
     }
     let f = *FRAME.lock().unwrap();
-    GOALS.lock().unwrap().push((f, rdx as u32 as i32, r8 as u32, p));
+    GOALS.lock().unwrap().push((f, rdx as u32 as i32, u32::from_le_bytes(xmm2[..4].try_into().unwrap()), p));
 }
 
 extern "C" fn on_copy(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void) {

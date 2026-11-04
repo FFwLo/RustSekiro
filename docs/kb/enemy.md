@@ -274,6 +274,16 @@ Dated findings, oldest first. Append new entries at the end.
     SpinStep still run to their end; Wait / Stay / Guard end by life as a success (gap: their
     updates not traced); FUN_140605ea0 (+0x7420) exception not traced. ai.rs life_end; test
     a_timed_out_goal_fails_unless_life_end_success; all_enemies_full still 94 / 110.
+  * Goal clocks (2026-11-04, E10): the life is an f32 countdown (goal +0x28: minus dt while
+    above 0, out at -1 < life <= 0; -1 endless, -0.5 out at once), so ends fall on the f32
+    frame; GetLife / GetLifeRemain read it. A script goal's Update runs only when its own timer
+    (+0x2c, drawn from REGISTER_GOAL_UPDATE_TIME's [min, max], FUN_1405c6700; the fixed-min
+    branch FUN_14097bda0 returns 0) is out, its life is out or a subgoal ended; unregistered
+    goals update every frame (assumed default 0, not traced). Registered: If 0.5-1, TurnAround /
+    NonBattleAct / Fall 0.1-0.2, DoorAct 0.2-0.3, KeepDistYAxis / ObjActTest 0.5-0.6, ComeDown /
+    Landing 0.5. ai.rs update_due; tests goal_life_counts_down_in_f32_like_the_exe,
+    goal_update_waits_for_its_update_time. The aimove hook read the life from r8; it is xmm2
+    (fixed): the General's d6 run now shows 10, 2.5, 3.0, 3.5893 and -1.
   * AI pacing vs the live recordings (2026-10-12, task 4). Live: memscope-data/logs rec_*_20261009,
     enemies tracked by ChrIns handle (slots 1 / 2 swap every 60 ticks), body anim = TimeAct +0x100
     without the overlay layers (face 7900xx, 9200, 9500-9503, 9600, 9700, 9999, 40000, 41500-41502),

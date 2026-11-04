@@ -329,6 +329,10 @@ struct Def {
     /// Update_Default_NoSubGoal returns Continue until they are done; ApproachSettingDirection
     /// ends its MoveToSomewhere when its own life is out).
     no_sub_goal: bool,
+    /// REGISTER_GOAL_UPDATE_TIME(min, max) (def +0x104 / +0x108): its Update runs again only
+    /// once a timer drawn from [min, max] runs out (FUN_1405c6700; the fixed-min branch is off
+    /// in the shipped exe), or when its life is out or a subgoal ended. Unset: every frame.
+    update_time: (f32, f32),
     combo: bool,
     tbl: Option<TableRef>,
     /// activate, update, terminate, interupt
@@ -346,7 +350,11 @@ struct Timing {
 
 struct Goal {
     kind: Option<i64>,
-    life: f64,
+    /// The life left (goal +0x28, f32): counted down by dt while above 0 (FUN_1405d06c0), out
+    /// at -1 < life <= 0; -1 and below is endless.
+    life: f32,
+    /// The Update timer (goal +0x2c): counted down every frame, Update runs at <= 0.
+    update_left: f32,
     p: Vec<Value>,
     subs: Vec<u32>,
     started: bool,
@@ -750,7 +758,8 @@ impl AiState {
         self.next_goal += 1;
         self.goals.insert(id, Goal {
             kind,
-            life,
+            life: life as f32,
+            update_left: 0.0,
             p,
             subs: Vec::new(),
             started: false,
@@ -793,7 +802,7 @@ impl AiState {
 
     fn life_over(&self, g: u32) -> bool {
         let goal = self.goal(g);
-        goal.life >= 0.0 && goal.t >= goal.life
+        -1.0 < goal.life && goal.life <= 0.0
     }
 
     /// `ai:AddTopGoal` / `goal:AddSubGoal` arguments: (id, life, params...).
@@ -1095,10 +1104,9 @@ impl AiState {
             // The life left (scripts end themselves on `GetLife() <= 0`; read at Activate it is
             // the whole life). An endless one (-1) stays -1.
             "GetLife" => {
-                let g = self.goal(id);
-                vec![Value::Num(if g.life >= 0.0 { g.life - g.t } else { g.life })]
+                vec![Value::Num(self.goal(id).life as f64)]
             }
-            "GetLifeRemain" => vec![Value::Num(self.goal(id).life - self.goal(id).t)],
+            "GetLifeRemain" => vec![Value::Num(self.goal(id).life as f64)],
             "GetSubGoalNum" => vec![Value::Num(self.goal(id).subs.len() as f64)],
             "SetNumber" => {
                 let v = a.get(1).cloned().unwrap_or_default();
@@ -1873,7 +1881,13 @@ impl Host for AiState {
                     self.defs.entry(k).or_default().no_sub_goal = truthy();
                 }
             }
-            "REGISTER_LOGIC_FUNC" | "REGISTER_GOAL_UPDATE_TIME" | "REGISTER_DBG_GOAL_PARAM" | "REGISTER_GOAL_USE_AVOID_CHR"
+            "REGISTER_GOAL_UPDATE_TIME" => {
+                if let Some(k) = id() {
+                    let n = |i: usize| args.get(i).and_then(Value::num).unwrap_or(0.0) as f32;
+                    self.defs.entry(k).or_default().update_time = (n(1), n(2));
+                }
+            }
+            "REGISTER_LOGIC_FUNC" | "REGISTER_DBG_GOAL_PARAM" | "REGISTER_GOAL_USE_AVOID_CHR"
             | "print" => {}
             // The guard count is kept engine-side (clash SpEffects 200210/1/5/6 in combat.rs).
             "Get_ConsecutiveGuardCount" => return Ok(vec![Value::Num(self.w.guard_count as f64)]),
@@ -1976,9 +1990,16 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
             return Ok(FAILED);
         }
     }
-    st.goal_mut(g).t += dt;
+    let goal = st.goal_mut(g);
+    goal.t += dt;
+    if goal.life > 0.0 {
+        goal.life -= dt as f32;
+    }
+    goal.update_left -= dt as f32;
+    let mut sub_ended = false;
     if let Some(&s) = st.goal(g).subs.first() {
         let r = tick_goal(vm, st, s, dt)?;
+        sub_ended = r != CONTINUE;
         if r == SUCCESS {
             st.apply_timing(s, st.k.timing_success);
             terminate(vm, st, s)?;
@@ -2002,6 +2023,9 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
                 return Ok(CONTINUE);
             }
             // Its Update decides while the subgoals run.
+            if !update_due(st, g, kind, sub_ended) {
+                return Ok(CONTINUE);
+            }
             let r = match call_def(vm, st, g, Cb::Update, &[Value::Num(dt)])? {
                 None | Some(Value::Nil | Value::Bool(false)) => CONTINUE,
                 Some(Value::Num(n)) => n as i32,
@@ -2015,7 +2039,7 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
         }
     }
     let goal = st.goal(g);
-    if goal.life >= 0.0 && goal.t >= goal.life {
+    if st.life_over(g) {
         // Life over: actions that already started run to their own end; an action that
         // never got to start fails (dropping the rest of its combo). Waiting goals end by
         // their life (gap: their own updates are not traced; read as a success).
@@ -2038,6 +2062,9 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
     if def.no_update {
         return Ok(if st.goal(g).subs.is_empty() { SUCCESS } else { CONTINUE });
     }
+    if !update_due(st, g, kind, sub_ended) {
+        return Ok(CONTINUE);
+    }
     let r = match call_def(vm, st, g, Cb::Update, &[Value::Num(dt)])? {
         None | Some(Value::Nil | Value::Bool(false)) => CONTINUE,
         Some(Value::Num(n)) => n as i32,
@@ -2051,6 +2078,18 @@ fn tick_goal(vm: &mut Vm, st: &mut AiState, g: u32, dt: f64) -> LuaResult<i32> {
         return Ok(st.life_end(g));
     }
     Ok(r)
+}
+
+/// Whether a script goal's Update runs this frame (FUN_1405d06c0): its update timer ran out,
+/// its life is out or a subgoal ended; the timer is drawn again when it does.
+fn update_due(st: &mut AiState, g: u32, kind: Option<i64>, sub_ended: bool) -> bool {
+    if st.goal(g).update_left > 0.0 && !st.life_over(g) && !sub_ended {
+        return false;
+    }
+    let (lo, hi) = st.def(kind).map_or((0.0, 0.0), |d| d.update_time);
+    let draw = if hi > lo { st.random() as f32 * (hi - lo) + lo } else { lo };
+    st.goal_mut(g).update_left = draw;
+    true
 }
 
 /// Drops the plan: every top goal ends (Terminate), the logic runs again next.
@@ -2801,6 +2840,50 @@ mod tests {
         b.st.trigger_edges();
         assert_eq!(b.st.trigger_changed, (vec![], vec![(1000, 42)]));
         assert_eq!(get(&mut b, "GetLeaveTriggerRegionUnitID", &[Value::Num(0.0)]), Some(42.0));
+    }
+
+    /// A goal's life is the exe's f32 countdown (goal +0x28, FUN_1405d06c0): minus dt each
+    /// frame while above 0, out at -1 < life <= 0, so a Wait(0.5) at 30 fps ends on the frame the
+    /// f32 sum says; -1 never ends and -0.5 ends at once. The exe's AddSubGoal lives in the
+    /// aimove runs (2.5, 3.0, 3.5893, 10, -1) are what goals carry.
+    #[test]
+    fn goal_life_counts_down_in_f32_like_the_exe() {
+        let Some(mut b) = brain() else { return };
+        let dt = 1.0 / 30.0;
+        let frames = |b: &mut Brain, life: f64| {
+            let g = b.st.new_goal(Some(2000), life, vec![]);
+            (1..=400).find(|_| tick_goal(&mut b.vm, &mut b.st, g, dt).unwrap() != CONTINUE)
+        };
+        for life in [0.5, 2.5, 3.5893, 10.0] {
+            let mut left = life as f32;
+            let want = (1..).find(|_| {
+                left -= dt as f32;
+                left <= 0.0
+            });
+            assert_eq!(frames(&mut b, life), want, "life {life}");
+        }
+        assert_eq!(frames(&mut b, -1.0), None);
+        assert_eq!(frames(&mut b, -0.5), Some(1));
+    }
+
+    /// REGISTER_GOAL_UPDATE_TIME(min, max): a script goal's Update runs once its timer (goal
+    /// +0x2c, drawn from [min, max]) is out, or when its life is out or a subgoal ended
+    /// (FUN_1405d06c0, FUN_1405c6700). Unregistered goals update every frame.
+    #[test]
+    fn goal_update_waits_for_its_update_time() {
+        let Some(mut b) = brain() else { return };
+        b.st.defs.entry(-77).or_default().update_time = (0.1, 0.2);
+        let g = b.st.new_goal(Some(-77), 10.0, vec![]);
+        assert!(update_due(&mut b.st, g, Some(-77), false), "the first frame");
+        let left = b.st.goal(g).update_left;
+        assert!((0.1..=0.2).contains(&left), "{left}");
+        assert!(!update_due(&mut b.st, g, Some(-77), false));
+        assert!(update_due(&mut b.st, g, Some(-77), true), "a subgoal ended");
+        b.st.goal_mut(g).update_left = -0.01;
+        assert!(update_due(&mut b.st, g, Some(-77), false));
+        let h = b.st.new_goal(Some(-78), 10.0, vec![]);
+        assert!(update_due(&mut b.st, h, Some(-78), false));
+        assert_eq!(b.st.goal(h).update_left, 0.0, "unregistered: every frame");
     }
 
     /// IsInsideTargetEx(observer, target, dir, angle, dist) measures from the observer's facing:
