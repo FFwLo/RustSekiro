@@ -2,7 +2,7 @@
 //! c0000*.hks for Wolf, c9997.hks + c<chr>.hks for an enemy) in AKJama's HKS VM (sekiro-rs
 //! crates/hks), hooked to the character's behaviour graph (hkb_runtime). `Host` is the engine's
 //! side: the answers to `env(id[, arg])`, the variables, the events the script fires.
-//! How it is driven and checked: docs/kb/hks-graph.md; the decompiled Lua check and the lockstep
+//! How it is driven and checked: docs/kb/behaviour-graph.md; the decompiled Lua check and the lockstep
 //! tests are in hks_lua.rs.
 
 use std::cell::RefCell;

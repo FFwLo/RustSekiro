@@ -1,7 +1,6 @@
 //! A behaviour-graph runtime: which states are active, how events move them, which clip plays.
 //!
-//! Adapted from sekiro-rs (AKJama, MIT / Apache-2.0), crates/sim/src/behavior.rs (CREDITS.md,
-//! THIRD_PARTY.md). Changed here: a CMSG's clip is picked the way the exe does it
+//! Adapted from sekiro-rs (AKJama, MIT / Apache-2.0), crates/sim/src/behavior.rs (CREDITS.md). Changed here: a CMSG's clip is picked the way the exe does it
 //! (`AnimOffsets`, `pick_cmsg_clip`); its tests stay in sekiro-rs.
 //!
 //! This is a deliberately small model of Havok Behavior as FromSoftware uses it:
@@ -1112,4 +1111,3 @@ mod tests {
         assert_eq!(play(&mut rt, "W_GroundSubAttackCombo1"), "a071_400000");
     }
 }
-

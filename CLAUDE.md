@@ -43,7 +43,7 @@ disassembly.
 | Sound, music | `src/sound.rs`, `src/fmod.rs`, `src/area_music.rs`, `docs/kb/sound.md` |
 | HUD, menus | `src/hud.rs`, `src/menu.rs` |
 | Extractor | `tools/sekiro-extract/src/` |
-| The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/hks-graph.md` |
+| The game's HKS script + behaviour graph run as the game does (live by default, SHINOBI_HKS=0 off; tests) | `src/hks_wolf.rs`, `src/hks.rs`, `src/hks_lua.rs`, `src/hkb_runtime.rs`, `docs/kb/behaviour-graph.md` |
 | The playthrough start to finish, gates, endings | `docs/kb/game-flow.md` |
 | The combat core alone (`--no-default-features`), its hooks; in sekiro-rs's game (`embed`: camera + debug menu, his `--rustsekiro` mode) | `src/lib.rs` (CombatCorePlugin, re-exports) |
 | Reference clips | `docs/kb/clips.md` (check before asking for a new recording) |

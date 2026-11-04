@@ -20,7 +20,7 @@ Contents (line numbers of this file; read a range, not the whole file):
 - 390: 2026-10-11 C2 names + foreign arena: `tools/npc_names.py` -> extracted/enemies/npc_names.json: 
 - 399: 2026-10-11 B5 enemy bullet flight (enemy_bullet.rs) from the exe bullet update FUN_140b0ded0 (b
 - 416: 2026-10-11 B5 AI command slots: Request Character AI Command (2004[17]) -> FUN_1405b4730 writes
-- 499: 2026-10-12 sekiro-rs ports ("bug fixes" findings; THIRD_PARTY.md):
+- 499: 2026-10-12 sekiro-rs ports ("bug fixes" findings; CREDITS.md):
 - 516: 2026-10-12 round 15 (ours): enemy guard clips follow c9997 ExecGuardBlock for blocks and
 - 523: 2026-10-12 EXLARGE guard (c9997 guard_damage_table 4: a blow on guardLevel 1, an ex blast on
 - 528: 2026-10-12 map AI hold, the damage wake: EMEVD 4[1] IF Character Damaged By / 3[23] IF Damage
@@ -495,7 +495,7 @@ Dated findings, oldest first. Append new entries at the end.
     (Monk, Butterfly, Apes, Dragons, and 54000000 / 71000000 / 71101000 on Isshin's field m11_02).
     set_fight(chr, row) at startup and on SpawnEncounter; a swap's line-up waits one frame for
     map.rs switch_map.
-- 2026-10-12 sekiro-rs ports ("bug fixes" findings; THIRD_PARTY.md):
+- 2026-10-12 sekiro-rs ports ("bug fixes" findings; CREDITS.md):
   * Super armour (sekiro-rs c0f97ee): the damage level an enemy reacts to is 0 under ChrActionFlag
     24, else swapped by its active spCategory 1001 SpEffect (lowest categoryPriority; stateInfo
     120 needs a super-armour meter, skipped) through dmgLv_* (FUN_14084ff70 -> bfd980 -> 10cea20
@@ -813,7 +813,7 @@ tick; ~2 fixed ticks a frame.
 ## The game's enemy script beside enemy.rs (2026-10-20)
 
 hks_lua::enemy_lockstep runs c9997 + c1020 on the soldier's graph with the engine's answers from
-the sim (docs/kb/hks-graph.md, Enemy script). Enemy::damage_env is the hit as ExecDamage reads it
+the sim (docs/kb/behaviour-graph.md, Enemy script). Enemy::damage_env is the hit as ExecDamage reads it
 (combat.rs fills it); Enemy::ai_cmd the AI's request. All six runs (alone, hit, blocked,
 deflected, mixed, posture break + deathblow) match the script frame by frame.
 

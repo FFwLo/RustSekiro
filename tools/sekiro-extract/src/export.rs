@@ -441,7 +441,7 @@ fn export_character(
     if state_names.is_empty() && chr.id != "c0000" {
         keys.extend(taes.keys().cloned());
     }
-    // Wolf: every clip his behaviour graph can play (the graph runs live, docs/kb/hks-graph.md),
+    // Wolf: every clip his behaviour graph can play (the graph runs live, docs/kb/behaviour-graph.md),
     // not only those of the listed states: the landing's and the fall's move starts and the like.
     if chr.npc_row.is_none() && !state_names.is_empty() {
         keys.extend(cmsg_clips.values().flatten().filter(|c| taes.contains_key(*c)).cloned());

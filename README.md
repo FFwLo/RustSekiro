@@ -49,4 +49,4 @@ repository; function addresses are fine.
 ## License
 
 Code under the [MIT License](LICENSE.md); it covers this code only, not the game or anything generated from it.
-The crates in `crates/` keep sekiro-rs's MIT / Apache-2.0 licence ([credits](crates/CREDITS-sekiro-rs.md)).
+The crates in `crates/` keep sekiro-rs's MIT / Apache-2.0 licence ([credits](CREDITS.md)).

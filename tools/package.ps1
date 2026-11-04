@@ -22,7 +22,7 @@ if (-not (Test-Path $exe)) { throw "build the game first: cargo build --profile 
 Copy-Item $exe $dist
 # The default config is the committed one, not the developer's working copy.
 git -C $root show HEAD:config.toml | Set-Content -Path (Join-Path $dist "config.toml") -Encoding utf8
-foreach ($f in "README.md", "LICENSE.md", "THIRD_PARTY.md") { Copy-Item (Join-Path $root $f) $dist }
+foreach ($f in "README.md", "LICENSE.md", "CREDITS.md") { Copy-Item (Join-Path $root $f) $dist }
 Set-Content -Path (Join-Path $dist "extract.bat") -Encoding ascii -Value @'
 @echo off
 rem Builds the "extracted" folder from your own copy of Sekiro.

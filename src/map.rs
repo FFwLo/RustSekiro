@@ -14,7 +14,7 @@
 //!   light; colours RGB with the intensity in W. The exe squares light and hemisphere colours
 //!   (`rgb * rgb * W`, gamma 2.0) and takes fog colours at gamma 2.2 (`colour`, `fog_colour`);
 //!   one scene-to-Bevy scale (`SCENE_TO_BEVY`) serves the sun, fill, ambient and probes. Both
-//!   from sekiro-rs `docs/SHADER-INPUTS.md` (exe traced, THIRD_PARTY.md); the scale is sekiro-rs's
+//!   from sekiro-rs `docs/SHADER-INPUTS.md` (exe traced, CREDITS.md); the scale is sekiro-rs's
 //!   own constant (library). The volumetric fog is height_fog.rs's pass.
 //!
 //! Without a map (config `[world] map` unset and no `SHINOBI_MAP`), nothing here runs and the
@@ -305,7 +305,7 @@ pub type MapMaterial = bevy::pbr::ExtendedMaterial<StandardMaterial, MapExt>;
 /// Bindless (map_material.wgsl `#ifdef BINDLESS`), so Bevy batches the map pieces into
 /// multi-draws instead of one bind group switch per material: the uniforms pack into one
 /// `MapUniform` per material, the textures go through an index table. After sekiro-rs 73eca1d
-/// (THIRD_PARTY.md).
+/// (CREDITS.md).
 #[derive(Asset, bevy::render::render_resource::AsBindGroup, Reflect, Debug, Clone, Default)]
 #[data(100, MapUniform, binding_array(124))]
 #[bindless(index_table(range(100..123), binding(123)))]

@@ -86,7 +86,7 @@ pub(crate) fn instant_hp_rate(d: &crate::data::CharData, key: &str, from: f32, t
 const FLAG_THROW_TYPE5: i64 = 69;
 
 /// A hit as c9997 ExecDamage reads it: env 202 damage type (DAMAGE_TYPE_GUARD 3, GUARD_BREAK
-/// 1001; a plain hit 99999, FUN_140b6bd40: docs/kb/hks-graph.md), 236 damage level, 222 direction (0 left, 1 right,
+/// 1001; a plain hit 99999, FUN_140b6bd40: docs/kb/behaviour-graph.md), 236 damage level, 222 direction (0 left, 1 right,
 /// 2 front, 3 back: GetDamageDirectionOffset onto DamageSmall a000_008000 front / 1 back / 2 left
 /// / 3 right), 3056 / 3057 the guard / deflect direction (GUARD_DIR_RIGHT 1, LEFT 2, else -1).
 #[derive(Clone, Copy, Debug, PartialEq)]

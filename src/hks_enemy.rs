@@ -1,7 +1,7 @@
 //! An enemy as the game runs it: the shared NPC script and its own (c9997.hks + c<chr>.hks) on
 //! its behbnd's c9997.hkx, with the engine's answers from the sim (`answers`, used by the
 //! lockstep tests too). It runs one per enemy in the game (SHINOBI_HKS=0: off) beside enemy.rs
-//! (`HksEnemyPlugin`); docs/kb/hks-graph.md.
+//! (`HksEnemyPlugin`); docs/kb/behaviour-graph.md.
 
 use std::collections::HashMap;
 use std::sync::Arc;

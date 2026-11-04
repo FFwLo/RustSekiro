@@ -15,7 +15,7 @@ Module bag slots traced here (bag = [ChrIns+0x1FF8]): +0x68 Physics, +0x70 Fall,
 - Velocity change (TAE 920) object embedded at P+0x1C0: int P+0x228 active row (-1 none).
 - Fall: vec4 P+0x850 = last grounded position (copied every grounded update), fall height = P+0x854 - Y
   (FUN_140b97880; env 224 GetFallHeight = that x100). Measured from the last grounded Y, NOT the jump apex
-  (hks-graph.md says apex: check). Clamp 59 m when FUN_140a58a70; 10000 m when [[ChrIns+0x50]+0x50]+0x9C bit 1
+  (behaviour-graph.md says apex: check). Clamp 59 m when FUN_140a58a70; 10000 m when [[ChrIns+0x50]+0x50]+0x9C bit 1
   (map hit event 0xE). +0xBF4/+0xBF8 running min of (groundY - Y). +0x8D0 air time s. Timers +0x8E0 (0.5) and
   +0x8F8 (10): velocity zeroed, byte +0x8E8 set. FUN_140bc2210 = fell >= 1500 m or air >= 30 s.
 - Floor material: u16 P+0x940 (ground-contact struct, previous frame at +0x9C0) is what the fall code looks up.

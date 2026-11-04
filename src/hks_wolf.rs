@@ -67,7 +67,7 @@ const GUARD_REACTION: [[i64; 12]; 5] = [
 ];
 
 /// The engine's answers for Wolf as player.rs has him at the start of this frame, with this
-/// frame's hit (combat.rs `Actor::damage_env`; exe FUN_140b6bd40 / FUN_140b698d0, docs/kb/hks-graph.md).
+/// frame's hit (combat.rs `Actor::damage_env`; exe FUN_140b6bd40 / FUN_140b698d0, docs/kb/behaviour-graph.md).
 #[allow(clippy::too_many_arguments)]
 /// `feet`: Wolf's feet above the ground under him (env 248's probe).
 pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &crate::config::GameConfig, locked: bool, pad: &Pad, damage: Option<DamageEnv>, feet: Option<f32>) {
@@ -251,7 +251,7 @@ pub fn answers(h: &mut Host, a: &Actor, p: &Player, combat: &Combat, config: &cr
 
 /// The clip offsets the exe reads for Wolf with this combat art and tool row equipped: the right
 /// hand the katana's wepmotionCategory with the art row's spAtkcategory, the left hand the tool's
-/// (hkb_runtime::AnimOffsets; docs/kb/hks-graph.md, How a CMSG picks its clip).
+/// (hkb_runtime::AnimOffsets; docs/kb/behaviour-graph.md, How a CMSG picks its clip).
 pub fn offsets(combat: &Combat, art: i64, tool: i64) -> crate::hkb_runtime::AnimOffsets {
     let field = |row: i64, f: &str| combat.param("EquipParamWeapon", row)[f].as_i64().unwrap_or(-1);
     crate::hkb_runtime::AnimOffsets { hands: [(field(tool, "wepmotionCategory"), field(tool, "spAtkcategory").max(0)), (field(KUSABIMARU, "wepmotionCategory"), field(art, "spAtkcategory").max(0))], ..Default::default() }

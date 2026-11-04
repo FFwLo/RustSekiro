@@ -498,7 +498,7 @@ before.
   hemisphere / probe weight), not the variant choice: the next B4 step.
 - **The game's tone curve and colour rules** (2026-10-12, plan B4; the rules traced by
   sekiro-rs docs/SHADER-INPUTS.md, exe functions 310630 / 24d920 / 2508b0 / 24db30, credited in
-  THIRD_PARTY.md). In src/map.rs: light and hemisphere colours upload squared (`colour()`:
+  CREDITS.md). In src/map.rs: light and hemisphere colours upload squared (`colour()`:
   `r*r*W`), fog colours byte-quantised then raised to 2.2 (`fog_colour()`), one scene scale
   `SCENE_TO_BEVY = 4500` (sekiro-rs lighting.rs) for lux, environment and ambient, and the
   Adaption Min / Max as the exe's soft limit (`soft_adapt()`: `Max*(1-exp(-x/Max))` above,
@@ -777,7 +777,7 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   (`FxEffect.keep`: no age limit) and lets it fade when the script handles the defeat.
 - gap: the collision part (h900800 on the roof) is not loaded, so the fog does not stop Wolf,
   and the object's model is not drawn. After sekiro-rs crates/sim/src/fogwall.rs (credited in
-  THIRD_PARTY.md).
+  CREDITS.md).
 
 ## 2026-10-12 The game's height fog (src/height_fog.rs, height_fog.wgsl)
 
@@ -804,7 +804,7 @@ listed above, a real gate frame to compare against, re-exporting the other arena
   000 6 h, 010 12 h, 020 18 h, 030 22 h, the nearest to the hour; m10 060, m25 070 (+ a Cloud
   layer). Camera-centred at infinite depth, no depth write; the probe stays the reflections
   and diffuse light but is no longer the sky box (`SHINOBI_MAP_PROBE_SKY=1` brings it back).
-  Ported from sekiro-rs sky.rs / sky.wgsl (THIRD_PARTY.md).
+  Ported from sekiro-rs sky.rs / sky.wgsl (CREDITS.md).
 - Check: 12 h pale hazy blue, 22 h dark teal with cloud wisps; 18 h flat ochre with dark cloud
   smudges. gap: the colour packing (gamma 2 times Intensity) and cloud shading are sekiro-rs's
   approximations, not the traced SkyDome_Ver2 shader; the fire sky and 8907015 are not chosen.

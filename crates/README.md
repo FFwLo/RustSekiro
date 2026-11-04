@@ -1,7 +1,7 @@
 # Copied crates
 
 These crates come from sekiro-rs by AKJama (https://github.com/AKJama/sekiro-rs), licensed MIT OR
-Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE` here; its credits in `CREDITS-sekiro-rs.md`). They were
+Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE` here; its credits in the top-level `CREDITS.md`). They were
 copied on 2026-11-03 from commit 673f68f of the local clone (branch local/game-lib, with one local
 change in `game/src/map.rs`) and are maintained in this repository from then on; upstream changes are
 not followed.
