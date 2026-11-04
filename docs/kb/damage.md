@@ -517,6 +517,74 @@ Not covered (gap):
   2026-11-03, animstart: `resolve` runs before `advance` on the last step's poses, a reaction it
   plays starts the tick after, `kb_wait` 2; the test reads Sv1's frames with no offset.)
 - the enemy-side numbers (Wolf -> General) are recorded but not tested; an enemy's guard break
-  knockback is not traced (Sv1 uses guardBrake for both sides).
+  knockback is not traced (Sv1 uses guardBrake for both sides). (Done 2026-11-04, row E13:
+  "Guard-break knockback" below.)
 - the General's AI dodges Wolf's slash, and a moved General's ragdoll hurt shapes stay at the
   snapshot spot, so these duels move the attacker and turn the defender's AI off.
+
+## Guard-break knockback (2026-11-04, row E13, topic knockback)
+
+Emulator `tools/emu-cases knockback` (kb/emulator-pilot.md row "knockback"): hits.rs's duels on the
+2026-11-04 snapshot (`D:/emu-snap-e10`, the General's arena), writes `extracted/emu/knockback_*.json`;
+test `enemy_guard_break_knockback_matches_the_exe` in `src/sim_tests/emu_knockback.rs`. Cases:
+Wolf's slash (AtkParam_Pc 5000010) on the General standing with AI off, guarding with 5 posture
+left (guard break), open with 5 left (posture break), guarding, open, deflecting; the General's
+slash on Wolf guarding with 40 left and open. Each frame: both positions, the knockback module
+([chr+0x1ff8]+0xa8), the ChrCtrl +0x90 controller, physics +0x860, and hooks on the knockback
+starts and the controller's setter.
+
+**FUN_140be6750 is not the knockback.** It ticks a position / facing adjuster embedded in ChrCtrl
+at +0x90 (vtable 0x142a8f850, built by FUN_140be6560): mode +0x50 0 = move by a delta over a time
+(fed to the physics push velocity +0x860), 1 = ease to a point, 2 = move to a point and turn to a
+facing, with +0x40 / +0x44 time left and +0x48 / +0x4c the totals; and a separate push (+0x55 on,
++0x60 a velocity added to physics +0x860, +0x74 yaw rate, +0x80 / +0x84 length / clock). Its
+setter FUN_140be6690 takes an interface object (move, turn, two times, mode); its callers are the
+throw module FUN_140be1d90 (the throw's alignment), FUN_1406bbae0, FUN_1406d6030 (event warp to
+an entity point, mode 2) and FUN_140ba6c60. In all seven duels it stayed off (+0x54 / +0x55 0, no
+setter call, no write from outside its tick). Driving it directly (`knockback_ctl_*`, fields
+written as the setter writes them): the +0x55 push moves 2.0 m/s x dt a frame and turns 3.0 rad/s
+x dt, as the fields say; mode 1 eases to the point over its time (bell-shaped steps, done in
+13 frames for 0.25 s); mode 0 moved 0.91 m for a 0.6 m delta over 0.3 s (the velocity it feeds
++0x860 each frame is not followed further); mode 2 with a zero point chased the world origin (the
+point is absolute). Not ported (Sv1 aligns throws its own way).
+
+**The knockback** is the knockback module, started in two halves:
+- the hit's resolve (FUN_140b6c880 at 0x140b6c2f5 -> FUN_140ba3420): the direction and the
+  distance (AtkParam distance x the facing factor; Wolf's slash 1.0 -> 0.952, deflect 0.4 -> 0.381);
+- the defender's reaction, through HKS act SetDamageAnimType (FUN_140b32410 -> FUN_140ba3190(field)):
+  the KnockBackParam field pair (Paramdex order: 0 damage_Min .. 10 damage_HeadShot, 11 guard_S,
+  12 guard_L, 13 guard_LL, 14 guardBrake), speed +0x30 = distance / (cont + dec / 2), +0x14 =
+  cont + dec, +0x1c = dec. When cont + dec is 0 the speed is set to 0: no push.
+
+| case | field | the General's row 0 | push | travel 45 frames |
+|---|---|---|---|---|
+| guard break | 14 guardBrake | 0 / 0 | none | 0.79 m (a000_008550 root motion) |
+| posture break by a hit | 14 guardBrake | 0 / 0 | none | 0.78 m (a000_008300) |
+| block | 11 guard_S | 0.05 / 0.2 | 6.35 m/s, 4 frames held, 12 decay | 1.04 m |
+| hit | 2 damage_M | 0.03 / 0.69 | 2.54 m/s | 0.97 m |
+| deflect | 11 guard_S | 0.05 / 0.2 | 2.54 m/s (0.381 m) | |
+| Wolf's guard break | 14 guardBrake | row 1: 0.06 / 0.54 | 3.26 m/s (as hits_g_break) | |
+| Wolf hit | 2 damage_M | row 1: 0.09 / 0.99 | 2.05 m/s | |
+
+Every enemy has KnockBackParam row 0 (NpcParam knockbackParamId 0), whose guardBrake is 0 / 0: an
+enemy whose guard or posture breaks is not pushed at all; his break clip's root motion moves him.
+
+Fixed in Sv1:
+- `Actor::knockback`: a row whose two times are 0 stops the push (before: it returned and the
+  block's guard_S push started the same hit kept running under the break: 0.25 s of 4.9 m/s).
+- `combat.rs` Hit: an enemy's posture broken by the hit re-times the push with guardBrake (row 0:
+  none), as the reaction's SetDamageAnimType does. The test fails on both before the fix.
+
+Matched: the field each outcome picks (by the push's hold + decay: guard_S 0.25, damage_M 0.72),
+no push on the enemy's guard and posture breaks, the break clips' travel (guard break 0.793 exe /
+0.777 Sv1; posture break 0.783 / 0.674, the exe's General walking into the hit), the hit's travel.
+
+Not covered (gap):
+- the push distance on blocks and deflects: the facing factor's direction (exe: the attack's motion
+  vector; Sv1 root to root) and Sv1's guard hold drifting the General sideways give 0.729 m for the
+  exe's 0.952; not compared by travel.
+- Wolf's posture break by a hit (g_open_low) is not in these duels: Sv1 keeps the hit's damage_*
+  push there; whether his reaction re-times it with guardBrake (row 1: 0.06 / 0.54) is not traced.
+- the deflect's travel (the exe's General goes on into his counter a000_003057); the kb module's
+  start a frame late (+0x45), already `kb_wait`.
+- the ChrCtrl +0x90 adjuster is not ported or compared (throw alignment and event warps use it).

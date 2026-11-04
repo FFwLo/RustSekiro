@@ -393,10 +393,19 @@ impl Actor {
     /// A negative `dist` pulls: the Spear's Combo2 pull (v7800 judges 115-117,
     /// knockbackDist_DirectHit -8 / -6 / -4 "Spear_pull") moves the target back along `dir`,
     /// toward the attacker; the caller caps it at the bodies' gap (`limit_knockback`).
+    /// A row whose two times are 0 stops the push instead (FUN_140ba3190: speed +0x30 = 0 when
+    /// cont + dec <= 0; a zero distance leaves the module as it was): KnockBackParam row 0, every
+    /// enemy's, has guardBrake 0 / 0, so an enemy's guard break cancels the block's guard_S push
+    /// and he moves by his GuardBreak clip alone (tools/emu-cases `knockback_w_break`).
     pub fn knockback(&mut self, dir: Vec3, dist: f32, cont: f32, dec: f32) {
         let dir = dir.with_y(0.0).normalize_or_zero() * dist.signum();
         let dist = dist.abs();
-        if dist <= 0.0 || dir == Vec3::ZERO || cont + dec <= 0.0 {
+        if dist <= 0.0 || dir == Vec3::ZERO {
+            return;
+        }
+        if cont + dec <= 0.0 {
+            self.kb_vel = Vec3::ZERO;
+            (self.kb_cont, self.kb_dec, self.kb_dec_total) = (0.0, 0.0, 0.0);
             return;
         }
         self.kb_vel = dir * (dist / (cont + dec * 0.5));

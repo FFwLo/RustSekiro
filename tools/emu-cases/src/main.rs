@@ -53,6 +53,7 @@ mod animstart;
 mod hksstick;
 mod worldbackread;
 mod bullets;
+mod knockback;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -936,6 +937,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("brkwin")) {
         return brkwin::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("knockback")) {
+        return knockback::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("hits")) {
         return hits::run(&|| Emu::new(exe, snap()), out, &want);

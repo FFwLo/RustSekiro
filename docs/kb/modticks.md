@@ -137,7 +137,7 @@ to 10200900 in the copy (33 cases): FUN_1407dceb0 maps every part to 0, +0x1ce n
 data no NpcParam row names a parts row but 95211000 / 95231000 (AtkParam_Npc 0, guardBreakRate
 0), so the parts guard never fires in Sekiro: nothing to port; the test checks the data stays so.
 
-**Not covered.** The knockback controller FUN_140be6750 (ChrCtrl +0x90; Sv1 has its own
-knockback, not compared), the damage module's hit-effect list, the stateInfo-155 bonus and the
+**Not covered.** The ChrCtrl +0x90 adjuster FUN_140be6750 (not the knockback after all: kb/damage.md
+"Guard-break knockback", 2026-11-04), the damage module's hit-effect list, the stateInfo-155 bonus and the
 stateInfo-331 instant refill in the emulator (no SpEffect added; Sv1 follows the code), Wolf's
 amounts, the hit task run as a whole.

@@ -2402,7 +2402,8 @@ fn resolve(
                         // (row 1: 0.06 / 0.54 s), not guard_*: the exe's g_break duel moves Wolf
                         // 0.0544 m a frame decaying over 32 frames from the same 1.08 m as the block,
                         // whose guard_S (0.06 / 0.3 s) gives 0.0854 over 18 (docs/kb/damage.md
-                        // "Landed hits"). gap: an enemy's guard break is not traced in the exe.
+                        // "Landed hits"). An enemy's row 0 has guardBrake 0 / 0: the block's push
+                        // stops (`Actor::knockback`; tools/emu-cases `knockback_w_break`).
                         if broken {
                             apply_knockback(&combat, da, atf.translation, dtf.translation, Some(aa.forward()), atk.knockback_guard, "guardBrake", "knockbackRate_vsPlayer_Guard");
                         }
@@ -2585,6 +2586,14 @@ fn resolve(
                         let def_rate = def_stamina_rate(&combat, da, atk.stamina_physics_attribute) * armor_posture * ghost_posture;
                         // (int) like the exe's FUN_1408439a0 return and the guard paths.
                         da.add_posture((pd * def_rate).floor());
+                        // An enemy's posture broken by the hit: his reaction's SetDamageAnimType
+                        // re-times the push with KnockBackParam guardBrake (field 14, FUN_140ba3190),
+                        // 0 / 0 on row 0, so the hit's damage_* push stops and the break clip's root
+                        // motion alone moves him (tools/emu-cases `knockback_w_broken`). gap: Wolf's
+                        // posture break by a hit is not traced (his row 1 guardBrake is 0.06 / 0.54).
+                        if da.side == Side::Enemy && da.posture_broken() && !no_motion && !still {
+                            apply_knockback(&combat, da, atf.translation, dtf.translation, Some(aa.forward()), atk.knockback_hit, "guardBrake", "knockbackRate_vsPlayer_DirectHit");
+                        }
                         match da.side {
                             Side::Player => {
                                 // The hit's side for the death (player.rs, BEH_R_DEATH).
