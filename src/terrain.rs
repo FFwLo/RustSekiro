@@ -30,7 +30,10 @@ pub const STEP_HEIGHT: f32 = 0.5;
 /// FUN_140bc4390 -> FUN_140bca6d0). In the emulator (topic collide, 2026-11-03) Wolf put h over
 /// flat ground and stepped one frame stands on it (physics +0xa2 set) for h up to 0.58 and
 /// falls from 0.62 on; the same with the proxy's lift (+0x188) at 0.1 and with +0x184 / +0x18c
-/// at 0.5, so it is not those. gap: which constant (0.6 m) is not found.
+/// at 0.5, so it is not those. It is the ground check FUN_140bce730's allowed gap (row E14 rim
+/// leave): the gap from the lifted feet to its probe's bottom must be at most FUN_140bc6390's
+/// value, 0.9 = this plus the 0.3 lift (kept less the lift at physics +0xca0, read 0.600 on the
+/// ground, 0 in the air). gap: where FUN_140bc6390 takes its 0.6 from is not read.
 pub const FLOOR_FOLLOW: f32 = 0.6;
 /// hknpCharacterProxyCinfo maxSlope, set to 60 deg in FUN_14104d3d0 (0x3f860a92 = 1.0472 rad).
 const MAX_SLOPE_DEGREES: f32 = 60.0;
@@ -164,24 +167,58 @@ pub fn terrain() -> Option<Arc<Terrain>> {
 
 /// Floor height under an actor centre (its feet are CAPSULE_HALF_HEIGHT lower): the highest
 /// walkable surface at most STEP_HEIGHT above the feet, else the one below; 0 without a map.
-/// How far from the centre the capsule's rim rests on a ledge (sekiro-rs sim body.rs
-/// RIM_SUPPORT: the radius x 0.866).
-const RIM_SUPPORT: f32 = RADIUS * 0.866;
+/// The ground check's probe: the post-step FUN_140bca6d0 sets physics +0xa2 (grounded) from
+/// FUN_140bce730, which drops a sphere of physics +0x818 (0.8) x the radius +0xd4 (0.4) = 0.32 m
+/// from the lifted feet and, with +0x841 on (Wolf's), a second of +0x844 (0.4) x 0.4 = 0.16 m.
+/// He is grounded when both land on a floor (normal within +0xc0c, 46 deg), the wide one within
+/// FLOOR_FOLLOW under the feet, and their bottoms within +0x848 (0.5 m) of each other; the gap
+/// down to the wide one is then his snap (velocity +0x150). Read from the probes' own results in
+/// the emulator (tools/emu-cases `collide_rimleave`, row E14): the rule gives +0xa2 on all 200
+/// frames of the five walks off the stone block.
+pub const GROUND_PROBE: f32 = 0.32;
+/// The second, narrow probe of the ground check (physics +0x844 x +0xd4).
+pub const GROUND_PROBE_NARROW: f32 = 0.16;
+/// How far apart the two probes' bottoms may be for the ground check to hold (physics +0x848).
+pub const GROUND_PROBES_APART: f32 = 0.5;
 
-/// The floor Wolf's capsule rim still rests on when the floor under his centre has dropped away
-/// (sim body.rs `rim_support`): the highest under eight points round the feet that is no higher
-/// than them and within the walk-down (`FALL_START_DROP`); he stands on a ledge's edge as the
-/// game's capsule does, instead of dropping once his centre is past it.
+/// The lowest point of a sphere of radius `r` dropped over (x, z) onto `floor`: it rests on the
+/// highest floor point under it, a corner at horizontal distance s holding its bottom
+/// r - sqrt(r^2 - s^2) under the corner (sampled at r/8 steps in eight directions).
+pub fn probe_bottom(floor: &dyn Fn(f32, f32) -> Option<f32>, x: f32, z: f32, r: f32) -> Option<f32> {
+    let mut best = floor(x, z);
+    for ring in 1..=8 {
+        let s = r * ring as f32 / 8.0;
+        let lift = (r * r - s * s).max(0.0).sqrt() - r;
+        for i in 0..8 {
+            let (sn, cs) = (i as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
+            if let Some(h) = floor(x + s * cs, z + s * sn) {
+                best = Some(best.map_or(h + lift, |b: f32| b.max(h + lift)));
+            }
+        }
+    }
+    best
+}
+
+/// The exe's ground check over `floor` (see GROUND_PROBE): the floor the wide probe holds the
+/// feet on, or None when he is in the air. Walking off a sharp edge this leaves him on its rim
+/// until the narrow probe is past it (0.16 m) when the drop is over GROUND_PROBES_APART, and
+/// until the wide one is (0.32 m) when it is less, then puts him on the lower floor
+/// (collide_steps: airborne 0.15-0.20 m past the edge, down 0.30-0.35 m past).
+pub fn ground_check(floor: &dyn Fn(f32, f32) -> Option<f32>, x: f32, z: f32, feet: f32) -> Option<f32> {
+    let wide = probe_bottom(floor, x, z, GROUND_PROBE)?;
+    let narrow = probe_bottom(floor, x, z, GROUND_PROBE_NARROW)?;
+    (feet - wide <= FLOOR_FOLLOW && (wide - narrow).abs() <= GROUND_PROBES_APART).then_some(wide)
+}
+
+/// The floor Wolf still stands on when the floor under his centre has dropped away: the ground
+/// check (`ground_check`) on the map, floors up to the proxy's 0.3 m lift over his feet (the
+/// probes start there; riding down a rim the corner is over the feet), never putting him higher
+/// than his feet; None when it fails and he leaves the edge. (Was a ring at 0.346 m holding him
+/// up to 0.3 m over any drop.)
 pub fn rim_floor(centre: Vec3) -> Option<f32> {
     let t = terrain()?;
     let feet = centre.y - CAPSULE_HALF_HEIGHT;
-    (0..8)
-        .filter_map(|i| {
-            let (s, c) = (i as f32 * std::f32::consts::FRAC_PI_4).sin_cos();
-            t.floor(centre.x + RIM_SUPPORT * c, centre.z + RIM_SUPPORT * s, feet + 0.05)
-        })
-        .filter(|h| feet - h < crate::player::FALL_START_DROP)
-        .reduce(f32::max)
+    ground_check(&|x, z| t.floor(x, z, feet + crate::actor::PROXY_LIFT), centre.x, centre.z, feet).map(|w| w.min(feet))
 }
 
 pub fn ground_y(centre: Vec3) -> f32 {
@@ -708,11 +745,12 @@ pub(crate) fn bodies_on_terrain(combat: Res<crate::data::Combat>, mut commands: 
             // collide); a deeper drop leaves him in the air (HKS BEH_R_FALL then starts the fall
             // after player::FALL_START_DROP).
             let down = if a.side == Side::Enemy { f32::INFINITY } else { FLOOR_FOLLOW };
-            // Wolf over a drop his rim still rests on: held at its edge (`rim_floor`).
+            // Wolf over a drop under his centre: the exe's ground check holds him on the edge's
+            // rim, puts him on the lower floor or leaves him in the air (`rim_floor`); a slope's
+            // probe bottom within 0.1 of the floor under him keeps that floor.
             let floor = match floor {
-                Some(h) if h >= feet - down => Some(h),
-                _ if a.side != Side::Enemy => rim_floor(tf.translation).or(floor),
-                _ => floor,
+                Some(h) if h >= feet - 0.02 || a.side == Side::Enemy => Some(h),
+                _ => rim_floor(tf.translation).map(|w| floor.filter(|h| w - h <= 0.1).unwrap_or(w)),
             };
             match floor {
                 Some(h) if h >= feet - down => tf.translation.y = h + CAPSULE_HALF_HEIGHT,

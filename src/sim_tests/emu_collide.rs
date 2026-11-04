@@ -133,3 +133,89 @@ pub(crate) fn walking_off_an_edge_falls_past_the_floor_follow_like_the_exe() {
     }
     assert!(n > 0);
 }
+
+/// The ground check FUN_140bce730 (the post-step's +0xa2) as its own two probes leave it
+/// (`collide_rimleave`: the five walks off the stone block, the probes' hit, normal and hit byte
+/// read after each frame): the radii are terrain.rs GROUND_PROBE / GROUND_PROBE_NARROW (+0x818 /
+/// +0x844 x +0xd4), and +0xa2 is set exactly when both hit a floor, the wide one's bottom lies
+/// within FLOOR_FOLLOW (+ the 0.3 lift) under the lifted feet and the two bottoms within
+/// GROUND_PROBES_APART (+0x848).
+#[test]
+pub(crate) fn the_ground_check_is_two_probes_like_the_exe() {
+    use crate::terrain::{FLOOR_FOLLOW, GROUND_PROBE, GROUND_PROBES_APART, GROUND_PROBE_NARROW};
+    let Some(v) = load("collide_rimleave.json") else { return };
+    let (mut n, mut air) = (0, 0);
+    for s in v["scenarios"].as_array().unwrap() {
+        let name = s["name"].as_str().unwrap();
+        let c = &s["consts"];
+        let k = |key: &str| c[key].as_f64().unwrap() as f32;
+        assert!((k("818") * k("d4") - GROUND_PROBE).abs() < 1e-5 && (k("844") * k("d4") - GROUND_PROBE_NARROW).abs() < 1e-5, "{name}: {c}");
+        assert!((k("848") - GROUND_PROBES_APART).abs() < 1e-5, "{name}: {c}");
+        for f in s["frames"].as_array().unwrap() {
+            let (hit, nrm, hit2, nrm2) = (floats(&f["hit"]), floats(&f["normal"]), floats(&f["hit2"]), floats(&f["normal2"]));
+            let (b1, b2) = (hit[1] + nrm[1] * GROUND_PROBE - GROUND_PROBE, hit2[1] + nrm2[1] * GROUND_PROBE_NARROW - GROUND_PROBE_NARROW);
+            // The cast starts 0.01 + its radius over the lifted feet.
+            let lifted = floats(&f["start"])[1] - GROUND_PROBE - 0.01;
+            // +0xca0 is the allowed gap less the lift: FLOOR_FOLLOW on the ground, 0 in the air.
+            let allowed = f["ca0"].as_f64().unwrap() as f32;
+            assert!(allowed == 0.0 || (allowed - FLOOR_FOLLOW).abs() < 1e-5, "{name}: {allowed}");
+            let ours = f["hit_byte"] == 1 && f["hit2_byte"] == 1 && (b1 - b2).abs() <= GROUND_PROBES_APART && lifted - b1 <= allowed + PROXY_LIFT + 1e-3;
+            let exe = f["a2"] == 1;
+            assert_eq!(ours, exe, "{name} along {}: probes {b1} / {b2}, gap {}", f["along"], lifted - b1);
+            n += 1;
+            air += (!exe) as usize;
+        }
+    }
+    println!("{n} frames, {air} in the air: the two-probe rule gives +0xa2 on all");
+    assert!(n >= 200 && air > 40);
+}
+
+/// Where Wolf leaves a sharp edge (`collide_stepwalk` down_*), RSekiro's `terrain::ground_check`
+/// over the exe's own ground profile along each walk (0.05 m sphere casts every 0.05 m) at the
+/// exe's positions: drops over GROUND_PROBES_APART go airborne once the narrow probe is past the
+/// rim (exe 0.15-0.20 m), smaller ones go down once the wide one is (0.30-0.35 m); each within one
+/// 0.05 m frame of the exe, the same way (was: 0.08 m past, or held 0.346 m over any drop).
+#[test]
+pub(crate) fn walking_off_an_edge_leaves_the_rim_where_the_exe_does() {
+    let Some(v) = load("collide_steps.json") else { return };
+    let mut n = 0;
+    for s in v["scenarios"].as_array().unwrap() {
+        let name = s["name"].as_str().unwrap();
+        if !name.starts_with("down") {
+            continue;
+        }
+        let start = floats(&s["start"]);
+        let req = floats(&s["req"]);
+        let d = Vec2::new(req[0], req[1]).normalize();
+        let along = |x: f32, z: f32| (x - start[0]) * d.x + (z - start[2]) * d.y;
+        let prof: Vec<Option<f32>> = s["profile"].as_array().unwrap().iter().map(|p| p[1].as_f64().map(|y| y as f32)).collect();
+        let floor = |x: f32, z: f32| prof[((along(x, z) / 0.05).round().max(0.0) as usize).min(prof.len() - 1)];
+        // The rim: the last profile point before the first sharp drop.
+        let Some(k) = (1..prof.len()).find(|&k| prof[k - 1].unwrap() - prof[k].unwrap_or(f32::NEG_INFINITY) > 0.15) else { continue };
+        let (edge, top) = (0.05 * (k - 1) as f32 + 0.025, prof[k - 1].unwrap());
+        let mut feet = start[1];
+        let (mut exe, mut ours) = (None, None);
+        for f in s["frames"].as_array().unwrap() {
+            let p = floats(&f["pos"]);
+            let a = f["along"].as_f64().unwrap() as f32;
+            if exe.is_none() && (f["a2"][0] == 0 || p[1] < top - 0.2) {
+                exe = Some((a, f["a2"][0] == 0));
+            }
+            if ours.is_none() {
+                match crate::terrain::ground_check(&floor, p[0], p[2], feet) {
+                    None => ours = Some((a, true)),
+                    Some(w) if w < top - 0.2 => ours = Some((a, false)),
+                    _ => {}
+                }
+            }
+            feet = p[1];
+        }
+        let ((ea, ef), (oa, of)) = (exe.unwrap(), ours.unwrap());
+        let way = |fell: bool| if fell { "airborne" } else { "down" };
+        println!("{name}: rim at {edge:.3}: exe {} {:.3} past, RSekiro {} {:.3} past", way(ef), ea - edge, way(of), oa - edge);
+        assert_eq!(ef, of, "{name}: exe {} RSekiro {}", way(ef), way(of));
+        assert!((ea - oa).abs() < 0.051, "{name}: exe leaves at {ea}, RSekiro at {oa}");
+        n += 1;
+    }
+    assert!(n >= 4);
+}

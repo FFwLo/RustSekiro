@@ -359,8 +359,8 @@ enemy with a proxy, 27 m from Wolf.
   0.2), then: drop 0.34 / 0.55 m: down on the lower floor 0.30-0.35 m past the edge, never airborne; drop 0.61 /
   0.74 m: airborne (+0xa2 clear) 0.15-0.20 m past; the 0.21 m step: down 0.15-0.20 past. Test
   `walking_off_an_edge_falls_past_the_floor_follow_like_the_exe` (follow vs fall by FLOOR_FOLLOW, 4 cases).
-  gap: where along the rim he leaves (0.15-0.35 m, the drop matters) is not ported: RSekiro's floor sampling still
-  holds him 0.08 m past; no rule fits all five without fitting.
+  Where along the rim he leaves (0.15-0.35 m) is the ground check's two probes: closed in
+  "Both moving, the stepping lift, enemy against enemy" (row E14, rim leave point).
 - Slopes over maxSlope 60 deg: none walkable in reach (the steep faces the scan meets are walls, normal y 0.06).
 - Emulator notes: thousands of sphere casts need their buffers allocated once (the emulator heap is 1 MB; the
   cast allocated 80 bytes a call and the 58k-cast scan crashed) and a TB flush every 256 casts.
@@ -465,12 +465,30 @@ Wolf's snapshot spot, his forced lunge 3000, Wolf's request put in at integrate 
   him; the General's own walk (his AI from 3-4 m led him off Wolf's ledge, 10 m down); forcing a
   step with +0xbbc 0x40 on an NPC called a null pointer; which layers the filter pairs (the
   matrix) and what sets a chr's filter info; a sideways or vertical offset between the two.
-- The rim leave point (walking off a sharp edge) stays as in "Bodies, steps and the floor follow":
-  from `collide_steps.json` the bottom sphere rides the corner, with drops over FLOOR_FOLLOW he is
-  airborne 0.15-0.25 m past the edge (+0xa2 clear), with smaller drops he stays grounded and is put
-  on the lower floor 0.30-0.35 m past (where the 0.4 m sphere's contact on the corner leans about
-  maxSlope 60 deg: 0.4 sin 60 = 0.346); the 0.2 m of the falling case has no constant found in the
-  post-step FUN_140bca6d0 path (not read to the end). Not ported: RSekiro still leaves at 0.08 m.
+- The rim leave point (walking off a sharp edge), closed. The post-step FUN_140bca6d0 sets +0xa2
+  from the ground check FUN_140bce730, which drops two spheres from the lifted feet: physics
+  +0x818 (0.8) x the radius +0xd4 (0.4) = 0.32 m, and with +0x841 set (Wolf) +0x844 (0.4) x 0.4 =
+  0.16 m. He is grounded when both land on a floor (normal within +0xc0c, 46 deg), the wide one's
+  bottom is at most FUN_140bc6390's gap under the lifted feet (0.9 = FLOOR_FOLLOW + the 0.3 lift,
+  kept less the lift at +0xca0: 0.6 on the ground, 0 in the air), and the two bottoms are within
+  +0x848 (0.5 m). The gap to the wide one is then his snap (+0x150). Off an edge, the narrow probe
+  passes the rim first (0.16 m). If the floor it finds lies over 0.5 m lower he is airborne (exe
+  0.15-0.20 m past). Otherwise he rides the rim on the wide probe and goes down when it passes
+  (0.32 m; exe 0.30-0.35). A narrow probe that only meets a wall (normal y 0.10) fails too.
+  - Emulator: `collide_rimleave` (the down walks with the probes' fields read each frame) ->
+    collide_rimleave.json, 200 frames, the rule gives +0xa2 on every one.
+  - Poking proves the cause. With +0x848 0.8, x187.49 no longer falls at the rim. With +0x844 0.6
+    (narrow 0.24 m), it falls 0.1 m later.
+  - Ported as `terrain::ground_check` (`probe_bottom`: the sphere's bottom over the floor, 8 rings
+    x 8 directions). It runs in `rim_floor` (bodies_on_terrain and player.rs's air start) once the
+    floor under the centre has dropped. A slope keeps the centre floor while the probe is within
+    0.1 m of it.
+  - Tests `the_ground_check_is_two_probes_like_the_exe` and
+    `walking_off_an_edge_leaves_the_rim_where_the_exe_does`. Over the exe's ground profile, all 4
+    walks leave the same way: airborne 0.175 past, as the exe; down at the same frame. RSekiro
+    used to leave at 0.08 m, or hang on a 0.346 m ring over any drop.
+  - gap: where FUN_140bc6390 takes its 0.6, the +0x841 / +0x844 values for enemies, and the
+    ride height on the rim (the probe bottom, within about 0.04 m of the exe's feet on the profile).
 ## In the air: jump, fall, NoGravity and fall damage against the exe (2026-11-03, exe, emulator, topic air)
 
 tools/emu-cases `air` (tools/emu-cases/src/air.rs): whole character frames FUN_140a4b570 at 1/60 s on the

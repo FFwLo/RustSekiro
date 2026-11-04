@@ -9,6 +9,7 @@
 //!   collide_stepwalk [name]       Wolf across the steps found -> collide_steps.json
 //!   collide_snap [x z] [wide|fine] [off=value..]  the floor follow depth -> collide_snap.json
 //!   collide_cast x z              the ground casts at one point (debug)
+//!   collide_rimleave [off=value..] the down walks with the ground check's cast -> collide_rimleave.json
 
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -452,8 +453,76 @@ fn step_walks(new_emu: &dyn Fn() -> Emu, out: &Path, only: Option<&str>) {
     std::fs::write(out.join(format!("{name}.json")), serde_json::to_string(&body).unwrap()).unwrap();
 }
 
+/// `collide_rimleave [off=value..]`: the down walks of STEP_WALKS again with the ground check
+/// FUN_140bce730 (called by the post-step FUN_140bca6d0, its result is +0xa2) read after every
+/// frame from the physics fields it leaves: the cast's start +0xc50 and vector +0xc60, its hit
+/// point +0xc70, normal +0xc80 and hit byte +0xc90, +0xca0 (the allowed gap less the extra
+/// depth). Prints the module's constants (+0xd4 radius, +0x818 the probe's share of it, +0x184,
+/// +0x8c4, +0xc0c maxSlope deg). `0x818=0.6` pokes a physics float (which constant moves the
+/// leave point) and only prints; the plain run -> collide_rimleave.json.
+fn rim_leave(new_emu: &dyn Fn() -> Emu, out: &Path, args: &[&str]) {
+    let pokes: Vec<(u64, f32)> = args[1..]
+        .iter()
+        .filter_map(|a| a.split_once('='))
+        .map(|(o, v)| (u64::from_str_radix(o.trim_start_matches("0x"), 16).unwrap(), v.parse().unwrap()))
+        .collect();
+    let mut done = Vec::new();
+    for (name, x0, z0, hd) in STEP_WALKS {
+        if !name.starts_with("down") {
+            continue;
+        }
+        let (mut emu, w, _) = setup(new_emu);
+        let wcm = emu.peek_u64(0x1_43d7_a1e0);
+        let spot = f32s(&mut emu, w.phys + 0x80, 3);
+        let d = super::proxy::heading(hd, 1.0);
+        let top = spot[1] + 8.0;
+        let g = Caster::new(&mut emu).cast(&mut emu, [x0, top, z0], [0.0, -16.0, 0.0], 0.05).map(|(t, _)| top - 16.0 * t - 0.05).unwrap();
+        let (wrap, _) = proxy_of(&mut emu, w.phys);
+        super::proxy::place(&mut emu, w.phys, wrap, [x0, g, z0]);
+        for &(o, v) in &pokes {
+            emu.poke_f32s(w.phys + o, &[v]);
+        }
+        let consts: BTreeMap<&str, f32> = [("d4", 0xd4), ("818", 0x818), ("184", 0x184), ("8c4", 0x8c4), ("c0c", 0xc0c), ("920", 0x920), ("844", 0x844), ("848", 0x848)].into_iter().map(|(k, o)| (k, f32s(&mut emu, w.phys + o, 1)[0])).collect();
+        let flags = emu.peek::<2>(w.phys + 0x840);
+        println!("{name}: {consts:?} +0x840/841 {flags:?}");
+        let req = [d[0] * 3.0, d[1] * 3.0];
+        let mut frames = Vec::new();
+        for _ in 0..40 {
+            {
+                let mut i = super::proxy::INT.lock().unwrap();
+                i.calls.clear();
+                i.set = Some(req);
+            }
+            emu.poke_f32s(w.stick, &[0.0, 0.0]);
+            flush_tb(&emu);
+            let r = emu.call(CHR_FRAME, &[wcm, 0, w.player], &[0.0, 1.0 / 60.0]);
+            assert!(r.stopped.is_none(), "{name}: frame stopped");
+            let p = f32s(&mut emu, w.phys + 0x80, 3);
+            let a2 = emu.peek::<1>(w.phys + 0xa2)[0];
+            let along = (p[0] - x0) * d[0] + (p[2] - z0) * d[1];
+            let (start, ray, hit, normal) = (f32s(&mut emu, w.phys + 0xc50, 3), f32s(&mut emu, w.phys + 0xc60, 3), f32s(&mut emu, w.phys + 0xc70, 3), f32s(&mut emu, w.phys + 0xc80, 3));
+            let hit_byte = emu.peek::<1>(w.phys + 0xc90)[0];
+            let ca0 = f32s(&mut emu, w.phys + 0xca0, 1)[0];
+            // The second cast (+0x841 on: radius +0x844 x +0xd4, its height against the first's
+            // within +0x848): start +0xcb0, vector +0xcc0, hit +0xcd0, normal +0xce0, byte +0xcf0.
+            let (start2, hit2, normal2) = (f32s(&mut emu, w.phys + 0xcb0, 3), f32s(&mut emu, w.phys + 0xcd0, 3), f32s(&mut emu, w.phys + 0xce0, 3));
+            let hit2_byte = emu.peek::<1>(w.phys + 0xcf0)[0];
+            let hit2_along = (hit2[0] - x0) * d[0] + (hit2[2] - z0) * d[1];
+            let hit_along = (hit[0] - x0) * d[0] + (hit[2] - z0) * d[1];
+            println!("  along {along:.3} y {:+.4} a2 {a2} start {:+.3} ray {:+.3} hit along {hit_along:.3} y {:+.4} n.y {:.3} byte {hit_byte} ca0 {ca0:.3} | 2nd start {:+.3} hit along {hit2_along:.3} y {:+.4} n.y {:.3} byte {hit2_byte}", p[1] - g, start[1] - g, ray[1], hit[1] - g, normal[1], start2[1] - g, hit2[1] - g, normal2[1]);
+            frames.push(json!({"pos": p, "along": along, "a2": a2, "start": start, "ray": ray, "hit": hit, "normal": normal, "hit_byte": hit_byte, "ca0": ca0, "start2": start2, "hit2": hit2, "normal2": normal2, "hit2_byte": hit2_byte}));
+        }
+        done.push(json!({"name": name, "start": [x0, g, z0], "heading": hd, "req": req, "dt": 1.0 / 60.0, "consts": consts, "frames": frames}));
+    }
+    if pokes.is_empty() {
+        let body = json!({"function": "0x140a4b570 (Wolf's chr frame) -> 0x140bca6d0 -> 0x140bce730", "scenarios": done});
+        std::fs::write(out.join("collide_rimleave.json"), serde_json::to_string(&body).unwrap()).unwrap();
+    }
+}
+
 pub(super) fn run(new_emu: &dyn Fn() -> Emu, out: &Path, args: &[&str]) {
     match args.first() {
+        Some(&"collide_rimleave") => rim_leave(new_emu, out, args),
         Some(&"collide_cast") => {
             let (mut emu, w, _) = setup(new_emu);
             let spot = f32s(&mut emu, w.phys + 0x80, 3);
