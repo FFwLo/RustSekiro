@@ -360,7 +360,7 @@ flag (on in the snapshot) does not touch any of these: they are pure checks.
   else two casts FUN_14094d8d0 (hit world [0x143d6d640]+0x98, filter 0x4c; 0x41 only between the local
   player and another player), from the thrower's point raised by its physics height (+0xd0) x 0.8, then
   x 0.42 (DAT_143b015a0), to the defender's point raised the same; radius = the LARGER of the two radii
-  (FUN_140bbf740; Wolf 0.4, the General 0.5) x sphereCastRadiusRateLow / Top (+0x30 / +0x32) / 100, no
+  (FUN_140bbf740; Wolf 0.4, the General 0.5) x sphereCastRadiusRateTop / Low (+0x30 / +0x32) / 100, no
   cast when 0. A cast passes with no hit or a hit (the sphere's centre at contact: 0.2 m over the floor)
   farther than the defender's point; both must pass; the debug byte [0x143d5be38]+0x101 forces a pass.
   Recasting here with that rule gives the exe's answer on all 1,200. Ported as player.rs throw_sight_ok

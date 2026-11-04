@@ -494,3 +494,169 @@ fn wolf_art_judges_resolve_like_the_exe() {
     assert!(windows > 0, "no a{group} attack windows");
     r.assert_clean("Wolf's art judges vs the exe");
 }
+
+/// (table, Paramdex field, exe function) for every field RSekiro's code names next to the exe
+/// function it cites, where the emulator saw that function read it: the field's row offset in
+/// the paramdef RSekiro reads by is the one the cited code loads, so the name is not swapped
+/// with a neighbour (the ThrowParam sight-cast one was). From the param read watch
+/// (tools/emu-cases EMU_PARAM_READS over atkrec_rows, guard, speffect, speffect2, hits, bullets,
+/// items, aiint, lockcam, air_falldmg, wire, damage, knockback, brkwin; kb/params.md E30).
+const CITED_READS: &[(&str, &str, u64)] = &[
+    ("AtkParam_Npc", "AppearAiSoundId", 0x1409a1290),
+    ("AtkParam_Npc", "atkDark", 0x14083dea0),
+    ("AtkParam_Npc", "atkFire", 0x14083dea0),
+    ("AtkParam_Npc", "atkMag", 0x14083dea0),
+    ("AtkParam_Npc", "atkPhys", 0x14083dea0),
+    ("AtkParam_Npc", "atkStam", 0x140847d50),
+    ("AtkParam_Npc", "atkThun", 0x14083dea0),
+    ("AtkParam_Npc", "defSeMaterial1", 0x140ba8840),
+    ("AtkParam_Npc", "defSfxMaterial1", 0x140ba8a50),
+    ("AtkParam_Npc", "directAtkStamDamage", 0x140847d50),
+    ("AtkParam_Npc", "directAtkStamDamage_Attacker", 0x140842790),
+    ("AtkParam_Npc", "guardBreakRate", 0x14084cd80),
+    ("AtkParam_Npc", "guardCutCancelRate", 0x140a12d60),
+    ("AtkParam_Npc", "hitSourceType", 0x14084fc50),
+    ("AtkParam_Npc", "hitStopTime", 0x140b9cd90),
+    ("AtkParam_Npc", "hitStopTime_Defencer", 0x140b9cfb0),
+    ("AtkParam_Npc", "isAllDirGuard", 0x140b6c880),
+    ("AtkParam_Npc", "isGhostAtk", 0x140b6c880),
+    ("AtkParam_Npc", "justDeflectedAction", 0x140b698d0),
+    ("AtkParam_Npc", "repelLostStamDamage", 0x140847d50),
+    ("AtkParam_Npc", "repelLostStamDamage_Attacker", 0x140842790),
+    ("AtkParam_Npc", "repelVictoryStamDamage_Attacker", 0x140842790),
+    ("AtkParam_Npc", "trackType", 0x140b68a50),
+    ("AtkParam_Pc", "AppearAiSoundId", 0x1409a1290),
+    ("AtkParam_Pc", "atkDark", 0x14083e060),
+    ("AtkParam_Pc", "atkFire", 0x14083e060),
+    ("AtkParam_Pc", "atkMag", 0x14083e060),
+    ("AtkParam_Pc", "atkPhys", 0x14083e060),
+    ("AtkParam_Pc", "atkSuperArmorCorrection", 0x140848440),
+    ("AtkParam_Pc", "atkThun", 0x14083e060),
+    ("AtkParam_Pc", "defSeMaterial1", 0x140ba8840),
+    ("AtkParam_Pc", "defSfxMaterial1", 0x140ba8a50),
+    ("AtkParam_Pc", "directAtkStamDamage_Attacker", 0x140842790),
+    ("AtkParam_Pc", "guardAtkRate", 0x14084c7b0),
+    ("AtkParam_Pc", "guardAtkRateCorrection", 0x14084c7b0),
+    ("AtkParam_Pc", "guardBreakCorrection", 0x14084ce20),
+    ("AtkParam_Pc", "guardCutCancelRate", 0x140a24ba0),
+    ("AtkParam_Pc", "hitSourceType", 0x14084fc50),
+    ("AtkParam_Pc", "hitStopTime", 0x140b9cd90),
+    ("AtkParam_Pc", "hitStopTime_Defencer", 0x140b9cfb0),
+    ("AtkParam_Pc", "isAllDirGuard", 0x140b6c880),
+    ("AtkParam_Pc", "isGhostAtk", 0x140b6c880),
+    ("AtkParam_Pc", "justDeflectedAction", 0x140b698d0),
+    ("AtkParam_Pc", "repelLostStamDamage_Attacker", 0x140842790),
+    ("AtkParam_Pc", "repelVictoryStamDamage_Attacker", 0x140842790),
+    ("BehaviorParam", "category", 0x140b698d0),
+    ("BehaviorParam_PC", "category", 0x140b698d0),
+    ("Bullet", "accelInRange", 0x140b14650),
+    ("Bullet", "gravityInRange", 0x140b14650),
+    ("Bullet", "homingAngle", 0x140b11270),
+    ("Bullet", "homingBeginDist", 0x140b11270),
+    ("Bullet", "hormingStopRange", 0x140b11270),
+    ("Bullet", "maxVellocity", 0x140b14650),
+    ("Bullet", "minVellocity", 0x140b14650),
+    ("Bullet", "spEffectId0", 0x1410b7910),
+    ("EquipParamWeapon", "attackBaseRepel", 0x14084c7b0),
+    ("EquipParamWeapon", "behaviorVariationId", 0x140a24560),
+    ("EquipParamWeapon", "defSeMaterial1", 0x140ba8840),
+    ("EquipParamWeapon", "defSfxMaterial1", 0x140ba8a50),
+    ("EquipParamWeapon", "guardBaseRepel", 0x14084ce20),
+    ("EquipParamWeapon", "guardCutCancelRate", 0x140a24ba0),
+    ("EquipParamWeapon", "overStrength", 0x14084c7b0),
+    ("EquipParamWeapon", "overStrength", 0x14084ce20),
+    ("EquipParamWeapon", "resourceItemA", 0x140a26010),
+    ("EquipParamWeapon", "saWeaponDamage", 0x140848440),
+    ("EquipParamWeapon", "spAtkcategory", 0x1409f1830),
+    ("HitMtrlParam", "disableFallDamage", 0x140ba8cb0),
+    ("HitMtrlParam", "fallDamageRate", 0x1408433f0),
+    ("HitMtrlParam", "fallDeathDist", 0x14084e5d0),
+    ("LockCamParam", "bulletAngRange", 0x140b2e0e0),
+    ("LockCamParam", "bulletMaxRadius", 0x140b2e0e0),
+    ("LockCamParam", "camDistTarget", 0x14073c260),
+    ("LockCamParam", "camFovY", 0x14073c260),
+    ("LockCamParam", "chrOrgOffset_Y", 0x14073c260),
+    ("LockCamParam", "lockRotXShiftRatio", 0x14073c260),
+    ("LockCamParam", "rotRangeMinX", 0x140742230),
+    ("NpcParam", "hitStopType", 0x140b9d850),
+    ("NpcParam", "maxDebtStamina", 0x140bd4e20),
+    ("NpcParam", "staminaRecoverBaseVel", 0x140a13a70),
+    ("NpcParam", "superArmorDurability", 0x140a12de0),
+    ("NpcParam", "superArmorRecoverCorrection", 0x140a12e90),
+    ("NpcThinkParam", "ear_dist", 0x140610a30),
+    ("NpcThinkParam", "ear_soundcut_dist", 0x140610b30),
+    ("NpcThinkParam", "nose_dist", 0x14061c940),
+    ("ReinforceParamWeapon", "saWeaponAtkRate", 0x140848440),
+    ("SpEffectParam", "aroundSightPointAddRate", 0x140bfc050),
+    ("SpEffectParam", "categoryPriority", 0x140c02000),
+    ("SpEffectParam", "categoryPriority", 0x140c05a80),
+    ("SpEffectParam", "categoryPriority", 0x140c05c10),
+    ("SpEffectParam", "categoryPriority", 0x140c064c0),
+    ("SpEffectParam", "changeHpEstusFlaskCorrectRate", 0x140c00ce0),
+    ("SpEffectParam", "changeStaminaRate", 0x140bfe2c0),
+    ("SpEffectParam", "disableBlood", 0x140c05f20),
+    ("SpEffectParam", "disablePoison", 0x140c05f20),
+    ("SpEffectParam", "effectEndurance", 0x140c03af0),
+    ("SpEffectParam", "effectEndurance", 0x140c06860),
+    ("SpEffectParam", "guardDefFlickPowerRate", 0x140bfccc0),
+    ("SpEffectParam", "hearingSearchEnemyCut", 0x140bfe590),
+    ("SpEffectParam", "hpRecoverRate", 0x140c00ce0),
+    ("SpEffectParam", "invocationConditionsStateChange1", 0x140c060d0),
+    ("SpEffectParam", "isWaitModeDelete", 0x140c04090),
+    ("SpEffectParam", "lifeReductionType", 0x140c00de0),
+    ("SpEffectParam", "motionInterval", 0x140c06c60),
+    ("SpEffectParam", "replaceSpEffectId", 0x140c005b0),
+    ("SpEffectParam", "sightSearchEnemyCut", 0x140bfe8a0),
+    ("SpEffectParam", "spCategory", 0x140c02000),
+    ("SpEffectParam", "spCategory", 0x140c02280),
+    ("SpEffectParam", "spCategory", 0x140c05a80),
+    ("SpEffectParam", "spCategory", 0x140c05c10),
+    ("SpEffectParam", "spCategory", 0x140c064c0),
+    ("SpEffectParam", "staminaRecoverChangeSpeed", 0x140bfbe40),
+    ("SpEffectParam", "stateInfo", 0x140bfc170),
+    ("SpEffectParam", "stateInfo", 0x140bfc490),
+    ("SpEffectParam", "stateInfo", 0x140bfccc0),
+    ("SpEffectParam", "stateInfo", 0x140c00de0),
+    ("SpEffectParam", "stateInfo", 0x140c02000),
+    ("SpEffectParam", "stateInfo", 0x140c02280),
+    ("SpEffectParam", "stateInfo", 0x140c05a10),
+    ("SpEffectParam", "stateInfo", 0x140c064c0),
+    ("SpEffectParam", "stateInfo", 0x140c06860),
+    ("SpEffectParam", "wepParamChange", 0x140c06240),
+    ("ThrowKindParam", "doesCheckNormalFallOrbit", 0x140be3ba0),
+    ("ThrowKindParam", "throwKindCategory", 0x140be3810),
+    ("ThrowParam", "DiffAngMin", 0x140be0270),
+    ("ThrowParam", "diffAngMyToDef", 0x140be0270),
+    ("ThrowParam", "isSkipSphereCast", 0x140be3da0),
+    ("ThrowParam", "judgeRangeBasePosDmyId1", 0x140be3290),
+    ("ThrowParam", "lowerYRange", 0x140be0270),
+    ("ThrowParam", "sphereCastRadiusRateTop", 0x140be3da0),
+    ("ThrowParam", "upperYRange", 0x140be0270),
+];
+
+/// Every `CITED_READS` claim against extracted/emu/params_reads.json: some instruction of that
+/// function read a byte of that field (the read's row offset decoded with the same Paramdex
+/// layout the export uses).
+#[test]
+fn cited_param_fields_are_read_by_the_cited_exe_code() {
+    let Ok(text) = std::fs::read_to_string(crate::paths::emu().join("params_reads.json")) else {
+        eprintln!("skipped: extracted/emu/params_reads.json missing (EMU_PARAM_READS, then emu-cases params_reads)");
+        return;
+    };
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let mut seen: HashSet<(String, String, u64)> = HashSet::new();
+    for r in v["reads"].as_array().unwrap() {
+        let Some(func) = r[5].as_u64() else { continue };
+        for f in r[3].as_array().unwrap() {
+            seen.insert((r[1].as_str().unwrap().to_string(), f.as_str().unwrap().to_string(), func));
+        }
+    }
+    assert!(!seen.is_empty(), "params_reads.json has no functions (set DSEKIRO_FUNCTIONS for params_reads)");
+    let missing: Vec<String> = CITED_READS
+        .iter()
+        .filter(|(t, f, func)| !seen.contains(&(t.to_string(), f.to_string(), *func)))
+        .map(|(t, f, func)| format!("{t}.{f} by FUN_{func:x}"))
+        .collect();
+    eprintln!("cited param reads: {} claims, {} reads recorded", CITED_READS.len(), seen.len());
+    assert!(missing.is_empty(), "{} cited fields not read by their function: {}", missing.len(), missing.join(", "));
+}

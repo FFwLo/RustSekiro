@@ -62,8 +62,8 @@ Fixed:
 Not covered / gaps:
 
 - Field names are Paramdex's. The value checks prove the bytes; a name swap like the throw one
-  is only caught where the code cites the exe's offset. gap: no systematic exe-accessor scan of
-  every field RSekiro reads.
+  is only caught where the code cites the exe's offset. (2026-11-04, E30 below: a read trace of
+  the exe's param accessors; covers the fields with a cited function, not every field.)
 - (Done 2026-11-04, E15 below.) The NPC bare-judge attack keys through the export's + 1000 fallback.
 - Runtime changes to rows: the snapshot is one moment (Naomori's arena, NG). Rows the game
   rewrites later (none seen here) or per-NG scaling (SpEffect-driven, not a param write) are not
@@ -135,3 +135,42 @@ Not covered:
   keys were not re-run here.
 - Only the General's EnemyIns runs the NPC function (it reads nothing chr-specific but the
   NpcParam row and the worn SpEffects).
+
+## 2026-11-04 (E30): which exe code reads which param field
+
+The exe has no field names (its only ones are a dev test step's three asserts on ATK_PARAM_ST:
+dmgLevel, atkPhys, guardAtkRate), so names are checked through the code that reads them:
+
+- Read watch (`tools/emu-cases`, params.rs `watch` / `ReadsLog`): with `EMU_PARAM_READS=<file>`
+  every Emu hooks reads of the row data of all 140 loaded tables, whatever generator runs, and
+  records (instruction, table, row offset -> the Paramdex fields on that byte, count);
+  `emu-cases ... params_reads` with DSEKIRO_FUNCTIONS names each instruction's function. Run
+  over atkrec_rows, guard, speffect, speffect2, hits, bullets, items, aiint, lockcam,
+  air_falldmg, wire, damage, knockback, brkwin (throw and acttrace_attack stop early on this
+  snapshot): 2,234 (instruction, field) pairs, extracted/emu/params_reads.json (local).
+- Cross-check: every place RSekiro's source names a param field within two lines of an exe
+  function it cites (630 pairs, 211 functions). 140 pairs: the cited function reads that very
+  field -> 130 (table, field, function) claims over 113 fields of 14 tables, kept in
+  `CITED_READS` and checked by `cited_param_fields_are_read_by_the_cited_exe_code`. 107: the
+  function reads other fields of the table; each looked at, all are flows where the field is
+  read by a callee getter (SpEffect FUN_140c04xxx accessors, FUN_14083dea0 / FUN_14083e060 for
+  the attack amounts from FUN_14084fc50) or two cites on neighbouring lines (FUN_140ba8a50 = SFX
+  materials, FUN_140ba8840 = SE: as the code says), no swap. Sibling names were looked for in
+  particular (Top / Low, 1 / 2, _Attacker, Rate / Type): FUN_140c00de0 reads lifeReductionRate
+  +0x124 in its decomp (no traced case matched).
+- Cited offsets: every "field ... +0xNN" in src/ and docs/kb against the paramdef offsets: 56
+  agree; the rest are chr / camera struct offsets, not param fields. One stale kb line fixed:
+  guard-deflect.md had sphereCastRadiusRateLow / Top for +0x30 / +0x32 (it is Top / Low, as
+  player.rs reads since the 2026-11-03 fix).
+
+Mismatches found: none in RSekiro's code.
+
+Not covered:
+
+- Fields RSekiro reads with no cited function nearby (most of the typed Attack / SpEffect /
+  BulletSpec fields, the camera's CameraParam rows): their bytes are proven equal to the game's,
+  their meaning only by Paramdex.
+- 404 pairs whose cited function did not run in any traced case (status build-up, stealth /
+  NpcThinkParam forget times, prosthetic costs, terrain, sounds), and 149 whose function reads
+  only other tables in the traces (the field read by a callee on another path).
+- A read is attributed to the function holding the instruction, not its callers.
