@@ -118,9 +118,9 @@ fn general_turn_rates_match_the_exe() {
 /// A moving enemy against Wolf (aimove `push_ledge` / `push_ledge_far`: the General's forced
 /// attack 3000 lunging at Wolf from 1.6 / 2.6 m, then his 1040 walking in; physics +0xb10 mode 2,
 /// his proxy integrated with the clip's velocity every frame; Wolf idle where the snapshot's
-/// broadphase has him). The General stops at `actor::contact_flat` of the two proxies (Wolf's
-/// lifted 0.4 x 1.5 capsule, the General's NpcParam 0.5 x 2.0 at his feet, keepDistance 0.05:
-/// 0.950 m) and Wolf is not shoved, as `separate` gives the one that walked in all the push.
+/// broadphase has him). The General stops at `actor::contact_flat` of the two proxies (his
+/// NpcParam 0.5 x 2.0 lifted 0.3 for his step, Wolf's 0.4 x 1.5 body at his feet, keepDistance
+/// 0.05: 0.950 m) and Wolf is not shoved, as `separate` gives the one that walked in all the push.
 #[test]
 fn moving_enemy_stops_against_wolf_like_the_exe() {
     let Some(runs) = frame_runs() else { return };
@@ -131,8 +131,9 @@ fn moving_enemy_stops_against_wolf_like_the_exe() {
         let w0 = &fr[0]["w"];
         for x in fr {
             let (g, w) = (&x["g"], &x["w"]);
-            let wolf = crate::actor::ProxyBody { feet: f(&w[1]), lift: crate::actor::PROXY_LIFT, radius: crate::actor::PLAYER_BODY_RADIUS, height: crate::actor::PLAYER_PROXY_HEIGHT };
-            let general = crate::actor::ProxyBody { feet: f(&g[1]), lift: 0.0, radius: 0.5, height: 2.0 };
+            // The stepping General lifted (physics +0x188, row E14), Wolf's body at his feet.
+            let wolf = crate::actor::ProxyBody { feet: f(&w[1]), lift: 0.0, radius: crate::actor::PLAYER_BODY_RADIUS, height: crate::actor::PLAYER_PROXY_HEIGHT };
+            let general = crate::actor::ProxyBody { feet: f(&g[1]), lift: crate::actor::PROXY_LIFT, radius: 0.5, height: 2.0 };
             let min = crate::actor::contact_flat(wolf, general).unwrap();
             let d = (f(&g[0]) - f(&w[0])).hypot(f(&g[2]) - f(&w[2]));
             assert!(d >= min - 0.001, "{} {x}: {d} inside {min}", sc["name"]);

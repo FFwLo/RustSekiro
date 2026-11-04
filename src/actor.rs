@@ -1573,13 +1573,57 @@ fn proxy_off(combat: &Combat, a: &Actor) -> bool {
     !a.anim.is_empty() && combat.data_of(a).flag(&a.anim, a.step(), FLAG_PROXY_OFF)
 }
 
-/// Characters don't overlap: pairs closer than their proxies' contact distance
-/// ([`contact_flat`]) are pushed apart horizontally. The proxies are upright capsules, so a pair
-/// whose heights don't meet (Wolf over an enemy's head after a head kick) is left alone, and one
-/// a little above the other stands closer: Wolf's capsule (0.4 round, 1.5 m) is lifted 0.3 m over
-/// his feet, an enemy's (NpcParam hitRadius / hitHeight) rests at his.
-/// gap: a moving enemy's proxy lift (the NPC's physics +0xb10 mode 3 moves it through
-/// FUN_14104da50) and his keepDistance are not traced; Wolf's 0.05 stands in for both.
+/// How one pair of characters is pushed apart this tick, horizontally: (a's move, b's move), or
+/// None when they don't touch. `ra` / `rb` are the bodies at rest (lift 0); `came_a` / `came_b`
+/// how far each came toward the other this tick; `stops_a` / `stops_b` a state that stops against
+/// the other whatever moved.
+///
+/// The exe (tools/emu-cases `pushmove`, 2026-11-04, row E14: the General's forced lunge 3000 and
+/// his own AI against a Wolf who stands, walks at him, backs off or crosses, whole world frames):
+/// a character whose proxy steps (Wolf every frame, an enemy while he moves: physics +0xb10
+/// mode 2) is lifted physics +0x188 = 0.3 m for its integrate (FUN_140bcac10; the General's own
+/// +0x188 is 0.3 too and his proxy entered integrate 0.3 m over his last feet) and is stopped
+/// where its capsule meets the other's body, which rests at the other's feet (the post-step
+/// FUN_140bca6d0 puts every proxy and body back there through FUN_14104dfd0), keepDistance 0.05
+/// (the General stopped 0.950 m from Wolf: 0.5 + 0.4 + 0.05). The one met is never shoved: Wolf
+/// standing did not move; backing off at 0.5 m/s he kept his 1/60 m a frame with the General held
+/// 0.966 m behind (0.95 at the General's step, then Wolf's own); crossing at 1.5 m/s he kept his
+/// line. Both walking in, each one's step stops at the other: the one stepping first closes the
+/// gap, then both hold at 0.950 and Wolf's push slides him round the General. So each side's
+/// share here is its own approach (both: each by how much it came in; neither: half each), and a
+/// side is stopped at [`contact_flat`] of itself lifted against the other at rest.
+/// gap: which of the two steps first in the exe's frame (Wolf's chr frame is called straight from
+/// FUN_140a70020, the enemies' elsewhere; the harness ran the General first) only moves the
+/// contact frame; the General's request at integrate falls near 0 along the contact once he
+/// touches (not ported: the push-out stands for it).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pair_push(pa: Vec3, pb: Vec3, ra: ProxyBody, rb: ProxyBody, came_a: f32, came_b: f32, stops_a: bool, stops_b: bool) -> Option<(Vec3, Vec3)> {
+    let lifted = |x: ProxyBody| ProxyBody { lift: PROXY_LIFT, ..x };
+    let (min_a, min_b) = (contact_flat(lifted(ra), rb), contact_flat(ra, lifted(rb)));
+    let d = (pb - pa).with_y(0.0);
+    let len = d.length();
+    if !min_a.into_iter().chain(min_b).any(|m| len < m) {
+        return None;
+    }
+    let n = if len > 1e-4 { d / len } else { Vec3::X };
+    let (wa, wb) = match (stops_a, stops_b) {
+        (true, false) => (1.0, 0.0),
+        (false, true) => (0.0, 1.0),
+        _ => {
+            let (ca, cb) = (came_a.max(0.0), came_b.max(0.0));
+            if ca + cb > 1e-5 { (ca / (ca + cb), cb / (ca + cb)) } else { (0.5, 0.5) }
+        }
+    };
+    let gap = |m: Option<f32>| m.map_or(0.0, |m| (m - len).max(0.0));
+    Some((-n * gap(min_a) * wa, n * gap(min_b) * wb))
+}
+
+/// Characters don't overlap: pairs closer than their proxies' contact distance are pushed apart
+/// horizontally ([`pair_push`]). The proxies are upright capsules, so a pair whose heights don't
+/// meet (Wolf over an enemy's head after a head kick) is left alone, and one a little above the
+/// other stands closer. Wolf's capsule is 0.4 round and 1.5 m, an enemy's NpcParam hitRadius /
+/// hitHeight. Enemy against enemy is the same code in the exe (any chr's proxy integrate meets any
+/// body its filter passes; pushmove `lunge_enemy_body`).
 fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entity, Vec3>>, mut q: Query<(Entity, &mut Actor, &mut Transform)>) {
     let _prof = crate::perf::span("separate");
     let radius = |a: &Actor| {
@@ -1590,10 +1634,11 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
         }
     };
     let half = crate::player::CAPSULE_HALF_HEIGHT;
-    // Enemies stand 0.05 m higher (enemy.rs spawn_lineup).
+    // At rest (the stepping side's lift is `pair_push`'s). Enemies stand 0.05 m higher (enemy.rs
+    // spawn_lineup).
     let body = |a: &Actor, t: &Transform| {
         if a.side == Side::Player {
-            ProxyBody { feet: t.translation.y - half, lift: PROXY_LIFT, radius: PLAYER_BODY_RADIUS, height: PLAYER_PROXY_HEIGHT }
+            ProxyBody { feet: t.translation.y - half, lift: 0.0, radius: PLAYER_BODY_RADIUS, height: PLAYER_PROXY_HEIGHT }
         } else {
             let row = &combat.param("NpcParam", combat.foe_of(a).npc_row);
             ProxyBody {
@@ -1622,48 +1667,33 @@ fn separate(combat: Res<Combat>, mut last: Local<std::collections::HashMap<Entit
             if a.hp <= 0.0 || b.hp <= 0.0 || in_throw(a) || in_throw(b) || proxy_off(&combat, a) || proxy_off(&combat, b) {
                 continue;
             }
-            let Some(min) = contact_flat(body(a, ta), body(b, tb)) else { continue };
-            let d = (tb.translation - ta.translation).with_y(0.0);
-            let len = d.length();
-            if len < min {
-                let n = if len > 1e-4 { d / len } else { Vec3::X };
-                // A start throw walks into its target without moving it (live: the broken
-                // enemy stays put while Wolf's 501900 stops against him); the sprint deflect's
-                // slide likewise stops against the enemy (gap: proxy weights not traced).
-                let stops = |x: &Actor| x.state == "DeathblowStart" || x.state == "SprintToDeflectGuard";
-                let (wa, wb) = match (stops(a), stops(b)) {
-                    (true, false) => (1.0, 0.0),
-                    (false, true) => (0.0, 1.0),
-                    // The one that walked in is stopped; one standing still is not shoved. Live
-                    // (rec_2026101x_*): an idle Wolf (a000_000000) with an enemy within 1.3 m moved
-                    // in 32 of 1267 ticks while the enemy closed in 148 times and stopped at 0.95 m;
-                    // Wolf running into an enemy (a000_0004xx / 5xx, 9306 ticks within 1.2 m) and the
-                    // enemy both median 0.0 m/s along the line between them. Before, the pair split
-                    // the overlap half each, so an enemy walking up slid Wolf in his idle pose.
-                    // Each side's share = its own approach this tick (both, or neither: half each).
-                    // gap: Havok's char proxy response is not traced; this is the recorded result.
-                    _ => {
-                        let came = |e: Entity, now: Vec3, toward: Vec3| last.get(&e).map_or(0.0, |p| (now - *p).with_y(0.0).dot(toward).max(0.0));
-                        let (ca, cb) = (came(*ea, ta.translation, n), came(*eb, tb.translation, -n));
-                        if ca + cb > 1e-5 { (ca / (ca + cb), cb / (ca + cb)) } else { (0.5, 0.5) }
-                    }
-                };
-                let push = n * (min - len);
-                ta.translation -= push * wa;
-                tb.translation += push * wb;
-                // A body pushed in the air stops against the other (its launch velocity goes;
-                // the stick's air control still adds its bit each tick). Live (rec_20261016_* boss
-                // fights, 19 head kicks off a forward jump over a perilous sweep): Wolf holds at
-                // the contact distance (1.14 m from the Monk, 0.95 m from the Owl) at 0.7 m/s
-                // until the kick lands 19 ticks on. Before, the jump's full speed stayed, so he slid
-                // round the body and shot past it at 6-7.5 m/s and the kick missed.
-                // gap: Havok's char proxy response is not traced; this is the recorded result.
-                if wa > 0.0 && a.airborne {
-                    a.air_base = Vec3::ZERO;
-                }
-                if wb > 0.0 && b.airborne {
-                    b.air_base = Vec3::ZERO;
-                }
+            // A start throw walks into its target without moving it (live: the broken enemy stays
+            // put while Wolf's 501900 stops against him); the sprint deflect's slide likewise
+            // stops against the enemy (gap: proxy weights not traced). Otherwise the one that
+            // walked in is stopped and one standing still is not shoved (`pair_push`, the exe).
+            // Live (rec_2026101x_*): an idle Wolf (a000_000000) with an enemy within 1.3 m moved
+            // in 32 of 1267 ticks while the enemy closed in 148 times and stopped at 0.95 m; Wolf
+            // running into an enemy (a000_0004xx / 5xx, 9306 ticks within 1.2 m) and the enemy
+            // both median 0.0 m/s along the line between them.
+            let stops = |x: &Actor| x.state == "DeathblowStart" || x.state == "SprintToDeflectGuard";
+            let n = (tb.translation - ta.translation).with_y(0.0).normalize_or(Vec3::X);
+            let came = |e: Entity, now: Vec3, toward: Vec3| last.get(&e).map_or(0.0, |p| (now - *p).with_y(0.0).dot(toward));
+            let (ca, cb) = (came(*ea, ta.translation, n), came(*eb, tb.translation, -n));
+            let Some((da, db)) = pair_push(ta.translation, tb.translation, body(a, ta), body(b, tb), ca, cb, stops(a), stops(b)) else { continue };
+            ta.translation += da;
+            tb.translation += db;
+            // A body pushed in the air stops against the other (its launch velocity goes;
+            // the stick's air control still adds its bit each tick). Live (rec_20261016_* boss
+            // fights, 19 head kicks off a forward jump over a perilous sweep): Wolf holds at
+            // the contact distance (1.14 m from the Monk, 0.95 m from the Owl) at 0.7 m/s
+            // until the kick lands 19 ticks on. Before, the jump's full speed stayed, so he slid
+            // round the body and shot past it at 6-7.5 m/s and the kick missed.
+            // gap: Havok's char proxy response is not traced; this is the recorded result.
+            if da != Vec3::ZERO && a.airborne {
+                a.air_base = Vec3::ZERO;
+            }
+            if db != Vec3::ZERO && b.airborne {
+                b.air_base = Vec3::ZERO;
             }
         }
     }

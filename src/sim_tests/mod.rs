@@ -73,6 +73,7 @@ mod emu_fxr;
 mod emu_items;
 mod emu_atkrec;
 mod emu_aimove;
+mod emu_pushmove;
 mod emu_aiint;
 mod emu_air;
 mod emu_fxr2;

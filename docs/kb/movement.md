@@ -414,8 +414,63 @@ with the enemy's proxy at his feet and Sv1's `separate` giving the push to the o
 (test `moving_enemy_stops_against_wolf_like_the_exe`). Emulator caveat: the Havok world step is
 not run, so bodies stay in the broadphase where the snapshot had them; with Wolf moved next to
 the General (the other aimove scenarios) the General's lunge passed right through him (0.05 m).
-Not covered: an enemy pushing a moving Wolf (both moving), a lift for the enemy's proxy (the
-same-height case cannot tell), the enemy against another enemy.
+(Closed in the next section: both moving, the enemy's lift, enemy against enemy.)
+
+## Both moving, the stepping lift, enemy against enemy (2026-11-04, exe, emulator, row E14)
+
+tools/emu-cases `pushmove` (tools/emu-cases/src/pushmove.rs): aimove's whole world frames (AI on,
+the General's chr frame, then Wolf's, 1/30 s) with the General put 1.6 m in front of Wolf at
+Wolf's snapshot spot, his forced lunge 3000, Wolf's request put in at integrate FUN_1418f8b60.
+7 runs that matter, 228 frames (`pushmove_<name>.json`); tests in src/sim_tests/emu_pushmove.rs.
+- The emulator's broadphase: why aimove's moved Wolf was passed through. A body moved by
+  its proxy (integrate's end FUN_1418fa930 -> FUN_14190b5a0 -> FUN_141902930) gets its transform
+  and quantized AABB at once but is only marked dirty in the hknpBroadPhase (world +0x488,
+  vtable +0x20 FUN_141985050); the trees are rebuilt in "UpdateBroadPhase" (vtable +0x28
+  FUN_141985120(broadphase, world +0x28 bodies, 0)), part of the Havok world step the harness does
+  not run. Calling it after every chr frame makes a moved Wolf a wall to the General's lunge again.
+  The General's proxy body (+0x98 = -1) was not in the broadphase in the snapshot at all.
+- The lift is any stepper's: the General's physics +0x188 is 0.3 like Wolf's, and in mode 2 his proxy
+  enters integrate 0.300 m over his last feet (all 228 integrates of both within 2 mm, test
+  `a_stepping_enemy_is_lifted_like_wolf`); after the post-step every proxy and body rests at the
+  feet again. His keepDistance is 0.05 too: he stops 0.950 m from Wolf (0.5 + 0.4 + 0.05).
+- Nobody is shoved. Wolf standing: 0 m moved while the General holds 0.950. Wolf backing off at
+  0.5 m/s: he keeps his 1/60 m a frame exactly, the General follows 0.966 m behind (0.95 from
+  where Wolf stood at the General's step, then Wolf's own step). At 1 m/s the lunge never reaches
+  him. Wolf crossing in front at 1.5 m/s: his line unchanged, the General meets him at 0.98-1.0.
+  Wolf walking into the lunging General at 1.5 m/s: both stop (each one's step meets the other
+  where the other's last step left him), then hold at 0.950 for 27 frames while Wolf's push
+  slides him round the General (0.45 m sideways). The General's own request at integrate drops
+  to about 0 along the contact once he touches (gap: where the exe cuts it is not traced).
+- RSekiro (fixed): `actor::pair_push` (from `separate`): each side is stopped at `contact_flat` of
+  itself lifted 0.3 against the other at its feet (before: Wolf always lifted, an enemy never,
+  so an enemy walking into Wolf used the wrong pair; the same-height cases cannot tell, a step
+  can); shares stay each side's own approach. Test `pushes_between_moving_characters_match_the_exe`
+  replays each step as the exe takes it (the General's, then Wolf's) through `pair_push`: 350
+  steps, 30 against the other, 349 within 3 mm of the exe, the 3.9 m/s arrival at a crossing
+  Wolf 7 mm (Havok slides the request along the contact, `pair_push` pushes out along the line).
+- Enemy against enemy: the same proxy code runs for every chr, and what a proxy meets is the
+  world's collision filter on the body's filter info (hknpBody +0x6c). In the snapshot every
+  humanoid enemy's proxy body carries 0x2000069 (the General's own too), the c1150 dogs 0x2000066,
+  Wolf 0x2000001. With Wolf's body given the dogs' value the General stops at 0.950 as before
+  (`lunge_dog_body`); given the humanoids' value his proxy passes right through
+  (`lunge_enemy_body`; test `enemy_bodies_meet_the_proxy_by_their_filter`). So two humanoid
+  enemies' map proxies do not push each other; NpcParam has a separate "capsule against
+  characters" (chrHitRadius / chrHitHeight, General 0.5 / 1.9 against hitRadius / hitHeight
+  0.5 / 2.0), not traced. RSekiro keeps pushing enemy pairs with the proxy rule: gap.
+- Not covered: who steps first in the exe's frame (Wolf's chr frame is called straight from
+  FUN_140a70020, the enemies' elsewhere; the harness runs the General first; it only moves the
+  contact frame); an idle enemy (physics +0xb10 mode 1) after being moved: Wolf walked through the
+  placed idle General even with the broadphase updated (`walk_into_idle`, while collide's idle dog
+  at its own snapshot spot stopped him), so a resting enemy is only proven where the snapshot left
+  him; the General's own walk (his AI from 3-4 m led him off Wolf's ledge, 10 m down); forcing a
+  step with +0xbbc 0x40 on an NPC called a null pointer; which layers the filter pairs (the
+  matrix) and what sets a chr's filter info; a sideways or vertical offset between the two.
+- The rim leave point (walking off a sharp edge) stays as in "Bodies, steps and the floor follow":
+  from `collide_steps.json` the bottom sphere rides the corner, with drops over FLOOR_FOLLOW he is
+  airborne 0.15-0.25 m past the edge (+0xa2 clear), with smaller drops he stays grounded and is put
+  on the lower floor 0.30-0.35 m past (where the 0.4 m sphere's contact on the corner leans about
+  maxSlope 60 deg: 0.4 sin 60 = 0.346); the 0.2 m of the falling case has no constant found in the
+  post-step FUN_140bca6d0 path (not read to the end). Not ported: RSekiro still leaves at 0.08 m.
 ## In the air: jump, fall, NoGravity and fall damage against the exe (2026-11-03, exe, emulator, topic air)
 
 tools/emu-cases `air` (tools/emu-cases/src/air.rs): whole character frames FUN_140a4b570 at 1/60 s on the
