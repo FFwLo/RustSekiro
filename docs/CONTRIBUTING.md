@@ -51,10 +51,10 @@ python tools/row.py                            # your claims and pull requests, 
 python tools/row.py start <ID> --agent <name>  # claim it, make your worktree and test root (--agent only once)
 python tools/row.py check                      # in the worktree: the guard and the full suite
 python tools/row.py submit "<one line>"        # push to your fork and open the pull request, filled in
-python tools/row.py verify <PR>                # check someone else's E row on your own copy of the game
+python tools/row.py verify <PR>                # check someone else's emu row on your own copy
 ```
 
-An `E` row's submit adds `--emu "<the emu-cases command that made your cases>"`; its numbers count as checked
+An emu row's (C or E) submit adds `--emu "<the emu-cases command that made your cases>"`; its numbers count as checked
 once another contributor's `row.py verify` re-made them from their own exe and the tests passed (it comments
 on the pull request). CI's `claim` check fails a pull request for a row someone else holds.
 

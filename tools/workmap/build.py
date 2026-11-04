@@ -49,11 +49,13 @@ def board():
     text = git("show", f"{remote}/agents-work-board:WORK.md")
     if not text:
         raise SystemExit(f"cannot read WORK.md from {remote}/agents-work-board: git fetch {remote} first")
-    rows, kind = [], None
+    rows, kind, kinds = [], None, []
     for line in text.splitlines():
-        m = re.match(r"## (\w+)", line)
+        m = re.match(r"## (\w+)(?::\s*(.*))?", line)
         if m:
             kind = m.group(1)
+            if m.group(2) and kind != "Done":
+                kinds.append([kind, f"{kind}: " + re.sub(r"\s*\(.*?\)$", "", m.group(2))])
         c = [x.strip() for x in line.strip().strip("|").split("|")]
         if line.startswith("| ") and len(c) >= 5 and re.match(r"[A-Z]\d+[a-z]?$", c[0]):
             rows.append([c[0], c[1], c[2], c[3], c[4], kind])
@@ -61,7 +63,7 @@ def board():
     for r in rows:
         if r[3] == "open" and r[0] in held:
             r[3] = held[r[0]]
-    return rows
+    return rows, kinds
 
 
 def claims(remote):
@@ -97,7 +99,8 @@ def main():
         tests, label = a.tests, "tests passing"
     else:  # CI has no game data to run the suite with: count the tests instead
         tests, label = len(re.findall(r"#\[test\]", git("grep", "-h", r"#\[test\]", "--", "src"))), "tests"
-    data = {"chr": chars, "sys": systems, "rows": board(), "tests": tests, "testsLabel": label,
+    rows, kinds = board()
+    data = {"chr": chars, "sys": systems, "rows": rows, "kinds": kinds, "tests": tests, "testsLabel": label,
             "date": datetime.date.today().isoformat()}
     with open(os.path.join(HERE, "template.html"), encoding="utf-8") as f:
         page = f.read().replace("/*DATA*/null", json.dumps(data, ensure_ascii=False))

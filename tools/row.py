@@ -7,9 +7,9 @@
                                            # a full run is remembered for submit
   python tools/row.py submit "<one line>" [--part] [--emu "<emu-cases command>" | --why "<reason>"] [--dry]
                                            # push to your fork and open the pull request, filled in
-                                           # (--dry prints it and changes nothing; E rows need --emu)
+                                           # (--dry prints it and changes nothing; emu rows need --emu)
   python tools/row.py verify <PR number> [--snapshot <dir>] [--dry]
-                                           # re-make an E row's emulator cases from YOUR exe, run its tests on
+                                           # re-make an emu row's emulator cases from YOUR exe, run its tests on
                                            # them and say so on the pull request (it runs the PR's code: read
                                            # the diff first)
   python tools/row.py drop <ID>            # give the row back and remove your worktree
@@ -166,20 +166,20 @@ def check(filt):
 
 
 def proof(top, rid, emu, why):
-    """An E row's value is trusted only when someone else can re-make it: the emulator command that made the cases,
+    """An emu row's (C or E) value is trusted only when someone else can re-make it: the emulator command that made the cases,
     a case generator under tools/emu-cases/src/ and a `_matches_the_exe` test in the diff."""
-    if not rid.startswith("E"):
+    if work_row(rid)[1] != "emu" and not rid.startswith("E"):
         return ""
     if why:
         return f"Emulator: none ({why})"
     if not emu or not re.match(r"^\S*emu-cases(\.exe)?\s", emu.strip() + " "):
-        sys.exit('an E row needs --emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>" '
+        sys.exit('an emu row needs --emu "emu-cases <sekiro.exe> <out dir> [--snapshot <dir>] <names>" '
                  '(the command that made your cases), or --why "<reason>" when it has no emulator check')
     files = git("diff", "--name-only", f"{remote()}/main...HEAD", cwd=top).splitlines()
     gen = [f for f in files if f.startswith("tools/emu-cases/src/") and not f.endswith("main.rs")]
     diff = git("diff", f"{remote()}/main...HEAD", "--", "src", "crates", cwd=top)
     if not gen or not re.search(r"^\+.*fn \w*_matches_the_exe", diff, re.M):
-        sys.exit("an E row's diff needs its case generator (tools/emu-cases/src/<topic>.rs) and a test named "
+        sys.exit("an emu row's diff needs its case generator (tools/emu-cases/src/<topic>.rs) and a test named "
                  '`..._matches_the_exe`, so a reviewer can re-make the cases; else --why "<reason>"')
     return "Emulator: `" + re.sub(r"^\S*emu-cases(\.exe)?", "emu-cases", emu.strip()) + "`"
 
@@ -226,7 +226,7 @@ Board: {rid} {kind}: {line}
 - [x] `row.py check` at {rec['sha'][:7]}, full suite {data}: `{rec['result']}`
 - [x] `python tools/guard.py push` passed
 - [ ] New behaviour has a sim test; a unit test that reads game data carries `cfg_attr(not(shinobi_data), ignore)`
-- [ ] For an E row: the emulator run (functions, case count) and the kb / emulator-pilot.md notes; it counts as
+- [ ] For an emu row (C or E): the emulator run (functions, case count) and the kb / emulator-pilot.md notes; it counts as
       checked once someone else runs `python tools/row.py verify <this PR>` on their own copy
 - [ ] The kb note says what is still not covered (`gap:`)
 

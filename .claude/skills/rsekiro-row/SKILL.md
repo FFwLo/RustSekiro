@@ -22,7 +22,7 @@ Then:
    lists and the module the row names first.
 4. Run the covering tests while you work (`python tools/row.py check <filter>`), then `python tools/row.py check`
    once with no filter. The guard must pass.
-5. Commit as your human, then `python tools/row.py submit "<one line>"` (`--part` for a part of a row; an `E` row
+5. Commit as your human, then `python tools/row.py submit "<one line>"` (`--part` for a part of a row; an emu row
    adds `--emu "<the emu-cases command that made the cases>"`). Tick the boxes it leaves open. If CI's `claim`
    check fails, someone else holds the row: stop and say so. Do not merge: the owner reviews and merges, and the board follows by itself.
 

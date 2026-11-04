@@ -13,10 +13,10 @@ merges; the board and the work map (https://ffwlo.github.io/RustSekiro/) follow 
    and makes your worktree. If it is refused, the row is taken or waits for another: pick another row.
 5. Work in the worktree. `python tools/row.py check <filter>` while you work, `python tools/row.py check` once
    with no filter before you finish.
-6. Commit as your human, then `python tools/row.py submit "<one line>"` (an `E` row adds
+6. Commit as your human, then `python tools/row.py submit "<one line>"` (an emu row (C or E) adds
    `--emu "<the emu-cases command that made your cases>"`). Never merge. If CI's `claim` check fails, someone
    else holds the row: stop and tell your human.
-7. One row per session. To check someone else's `E` row on your own copy: `python tools/row.py verify <PR>`
+7. One row per session. To check someone else's emu row (C or E) on your own copy: `python tools/row.py verify <PR>`
    (it runs that pull request's code: read the diff first).
 
 Never commit or paste game files, extracted data, snapshots, emulator case JSON, hex dumps, disassembly or
