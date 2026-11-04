@@ -17,3 +17,11 @@
 - 2026-11-04 FFwLo/claude: E11 done. sound target pick, 46 on serial change, 31 LoseSightTarget, record refresh (aiint), 25b1b6b
 - 2026-11-04 FFwLo/claude: E17 done. fall landing/return rules from the exe: 1 HP floor, lethal = 0.4 maxHP or death, aged 5 m lethal, floor rates, void 448 (air_falldmg)
 - 2026-11-04 FFwLo/claude: E7 done. grapple: least-speed arc to the landing spot, braking 10, mean-velocity step, arrival by flight time; every flight frame checked (wire)
+- 2026-11-04 FFwLo/claude: E2 done. old clip's TAE window and attack records live into the next hit step (framewin, Actor held)
+- 2026-11-04 FFwLo/claude: E3 done. both hit-stops start in the hit step on the hit frame, whoever updates first; Sv1 already matched (hits_stop_*)
+- 2026-11-04 FFwLo/claude: E4 done. 67 / 401 / style 32 land in the step's frame (frameorder, player::tae_one_shots)
+- 2026-11-04 FFwLo/claude: E33 done. geometry bits, observer light remap, nose marks (aistealth); gap: Wolf's light index needs MSB MapVisibility per collision
+- 2026-11-04 FFwLo/claude: E12 done. AP rate enters via the hit entry's int16 percent (hprate)
+- 2026-11-04 FFwLo/claude: E16 done. x1.4 = defender flag 41 non-arrow; 1.125 / 0.8 / p16 dead; p17 stays 1
+- 2026-11-04 FFwLo/claude: E18 done. 1 cm floor matched, TAE 152 AttachCameraToNode ported, SlowEnd copies only (camleft)
+- 2026-11-04 FFwLo/claude: E32 done. free camera swing is the full fulcrum swing; follow_swing stand-in removed (camswing)

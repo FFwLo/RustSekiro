@@ -112,18 +112,10 @@ character turns out to run exe code of its own, add an `E` row for that part.
 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
-| E2 | emu | | open | Frame order: the old clip's last TAE window on the frame a reaction starts, and the windows of an attack that `decide` replaces in the same tick | kb/frame-coverage.md "Not covered"; kb/taewin.md (state events last one update longer in the exe); system: TAE events |
-| E3 | emu | | open | Frame order: hit-stop frames, and which frame a hit's stop starts on when the attacker updates earlier in the same frame | kb/modticks.md "Not covered"; harness `modticks`, `hits` |
-| E4 | emu | | open | Frame order: one-shot SpEffects 401 / 67 and weapon style 32 land one tick late in RSekiro; the exe runs them in the step's frame | kb/frame-coverage.md |
 | E6 | emu | | open | Other prosthetics (shuriken, firecracker, flame vent, umbrella): find how the exe switches Wolf's tool in the emulator copy (writing PlayerGameData +0x5ec did not), then check the bullet spawns against `prosthetic.rs` | harness `items`; kb/frame-coverage.md |
-| E12 | emu | | open | Where the Attack Power rate enters HP damage | kb/atkrec.md; system: Combat rules |
 | E14 | emu | | open | The rim leave point, and an enemy pushing a moving Wolf (both moving), and enemy against enemy | kb/movement.md "Not covered"; system: Maps / collision |
 | E15 | emu | | open | The 66 NPC attack keys that exist only through the exporter's +1000 fallback: does the exe fall back? FUN_140a12b80 has no such branch | kb/params.md "Not covered" |
-| E16 | emu | | open | The damage sum's flag factors (1.4 / 1.125 / 0.8 / p16 / p17): tie them to their callers | kb/damage.md "Not covered"; system: Combat rules |
-| E18 | emu | | open | Camera leftovers: the 1 cm fulcrum floor, the zero-length final cast, the TAE overrides of the distance rate (FUN_1408311a0) and of +0xf0 (FUN_140831190), SlowEnd | kb/camera.md "Not covered" (three lists) |
 | E30 | emu | | open | Params: scan the exe's accessors for every param field RSekiro reads, so a swapped field name is caught | kb/params.md "Not covered" |
-| E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
-| E33 | emu | | open | Stealth: map lighting in perception (always "Good" light today), the observer's geometry bits (FUN_140616f50) and Wolf's hiding SpEffects 332 / 334 | system: Stealth; the `gap:` lines in src/stealth.rs |
 
 ## P: port gaps
 
@@ -173,3 +165,11 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E11 | FFwLo/claude | 2026-11-04 | sound target pick, 46 on serial change, 31 LoseSightTarget, record refresh (aiint), 25b1b6b |
 | E17 | FFwLo/claude | 2026-11-04 | fall landing/return rules from the exe: 1 HP floor, lethal = 0.4 maxHP or death, aged 5 m lethal, floor rates, void 448 (air_falldmg) |
 | E7 | FFwLo/claude | 2026-11-04 | grapple: least-speed arc to the landing spot, braking 10, mean-velocity step, arrival by flight time; every flight frame checked (wire) |
+| E2 | FFwLo/claude | 2026-11-04 | old clip's TAE window and attack records live into the next hit step (framewin, Actor held) |
+| E3 | FFwLo/claude | 2026-11-04 | both hit-stops start in the hit step on the hit frame, whoever updates first; Sv1 already matched (hits_stop_*) |
+| E4 | FFwLo/claude | 2026-11-04 | 67 / 401 / style 32 land in the step's frame (frameorder, player::tae_one_shots) |
+| E33 | FFwLo/claude | 2026-11-04 | geometry bits, observer light remap, nose marks (aistealth); gap: Wolf's light index needs MSB MapVisibility per collision |
+| E12 | FFwLo/claude | 2026-11-04 | AP rate enters via the hit entry's int16 percent (hprate) |
+| E16 | FFwLo/claude | 2026-11-04 | x1.4 = defender flag 41 non-arrow; 1.125 / 0.8 / p16 dead; p17 stays 1 |
+| E18 | FFwLo/claude | 2026-11-04 | 1 cm floor matched, TAE 152 AttachCameraToNode ported, SlowEnd copies only (camleft) |
+| E32 | FFwLo/claude | 2026-11-04 | free camera swing is the full fulcrum swing; follow_swing stand-in removed (camswing) |
