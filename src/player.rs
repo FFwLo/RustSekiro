@@ -807,7 +807,9 @@ impl Plugin for PlayerPlugin {
             .init_resource::<ActiveThrow>()
             .add_systems(FixedUpdate, hks_pad_in.before(throw_check).before(ActorSet::Decide))
             .add_systems(FixedUpdate, pad_manipulator.after(hks_pad_in).before(throw_check).before(ActorSet::Decide))
-            .add_systems(FixedUpdate, (sync_art_variation, decide, apply_refresh_effects, record_state).chain().in_set(ActorSet::Decide))
+            .add_systems(FixedUpdate, (sync_art_variation, decide, record_state).chain().in_set(ActorSet::Decide))
+            // The step's one-shot TAE events (401 / 67 SpEffects, 32 weapon style) in the step's tick.
+            .add_systems(FixedUpdate, (apply_refresh_effects, tae_one_shots).chain().after(ActorSet::Advance).before(crate::combat::resolve_throws).before(crate::anim::PoseSet))
             .add_systems(FixedUpdate, hks_pad_out.after(ActorSet::Decide).before(ActorSet::Advance))
             .add_systems(FixedUpdate, follow_throw.after(ActorSet::Advance).before(crate::anim::PoseSet))
             .add_systems(FixedUpdate, consume_goods.after(ActorSet::Advance))
@@ -3064,6 +3066,90 @@ fn apply_refresh_effects(
         }
     }
 }
+/// The one-shot TAE events of the step that just ran (row E4, kb/frame-coverage.md "One-shot TAE
+/// events' frame"): the exe dispatches them inside the chr frame's Havok step (TAE update
+/// FUN_140b5c920 -> FUN_140b59170: 32 FUN_140b509b0, 67 FUN_140b56500, 401 FUN_140b56750, the
+/// add FUN_1409e9c00 on the update that enters the event), so they land in the frame whose step
+/// enters them, before that frame's HKS. Sv1 ran them in the next tick's `decide`, a tick late;
+/// now after `advance`, on the window it just took (`apply_refresh_effects` the same).
+fn tae_one_shots(combat: Res<Combat>, config: Res<GameConfig>, mut log: ResMut<CombatLog>, mut player: Single<(&mut Player, &mut Actor), Without<Enemy>>) {
+    if FLOWN.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let d = &combat.player;
+    let (p, a) = &mut *player;
+    // One-shot recoveries from the TAE's AddSpEffect (motionInterval 999: applied once): the
+    // resurrection's 110015 "HP Half Recovery" (changeHpRate -50 -> +50 % of max HP, frame 0) and
+    // the deathblow's (a20x_510xxx at the kill frame): 105050 posture 34 % for everyone, and the
+    // skills' 150301 / 150311 HP 10 % and 150321 / 150331 posture 34 %, which work only while the
+    // skill's permit stateInfo (986 / 987 / 984 / 985, invocationConditionsStateChange1) is on Wolf.
+    // "Recovery prohibited by the Todome" (とどめスルーによる回復禁止: 105051, 150302 / 150312 /
+    // 150322 / 150332): Wolf's Todome anims a000_710205-7 add them (TAE 401, f0, effectEndurance
+    // -1, kept in `Player.held`); each shares its recovery's spCategory (179 / 175-178) at
+    // categoryPriority 2 vs 3, and the lower priority wins in a category, so after a Todome these
+    // recoveries do nothing.
+    if a.prev_t < a.t {
+        let states: Vec<i64> = crate::combat::skill_sp_effects(&combat, &config).filter_map(|se| se["stateInfo"].as_i64()).filter(|&s| s > 0).collect();
+        let (mut heal, mut posture) = (0.0f32, 0.0f32);
+        if let Some(an) = d.anim(&a.anim) {
+            let fired: Vec<(i64, &crate::data::SpEffect)> = an
+                .events
+                .iter()
+                .filter(|e| matches!(e.kind, 67 | 401) && one_shot_starts(e.start, a.prev_t, a.t))
+                .filter_map(|e| {
+                    let id = e.arg_i64("SpEffectID").unwrap_or(0);
+                    Some((id, d.sp_effects.get(&id.to_string())?))
+                })
+                .collect();
+            // A fired row that outranks a held one of its category replaces it: every deathblow
+            // clip's f0 105052 / 150303 / 150313 / 150323 / 150333 (priority 1, "release recovery
+            // prohibition") lift the 105051 / 1503x2 (priority 2, endurance -1) the Event7102xx
+            // clips put on; they stayed until a reset (round 30).
+            for &(_, s) in &fired {
+                if s.sp_category > 0 {
+                    p.held.retain(|h| d.sp_effects.get(&h.to_string()).is_none_or(|h| h.sp_category != s.sp_category || s.category_priority >= h.category_priority));
+                }
+            }
+            for &(id, s) in &fired {
+                if s.effect_endurance < 0.0 && s.sp_category > 0 && !p.held.contains(&id) {
+                    p.held.push(id);
+                }
+            }
+            let blocked = |s: &crate::data::SpEffect| {
+                s.sp_category > 0
+                    && p.held.iter().filter_map(|h| d.sp_effects.get(&h.to_string())).any(|h| h.sp_category == s.sp_category && h.category_priority < s.category_priority)
+            };
+            for s in fired.iter().map(|f| f.1).filter(|s| s.motion_interval >= 999.0 && !blocked(s)) {
+                let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
+                if conds.iter().any(|&c| c > 0) && !conds.iter().any(|c| *c > 0 && states.contains(c)) {
+                    continue;
+                }
+                heal += (-s.change_hp_rate).max(0.0);
+                posture += s.change_stamina_rate.max(0.0);
+            }
+        }
+        if heal > 0.0 {
+            let gain = (a.hp_max * heal / 100.0).min(a.hp_max - a.hp);
+            a.hp += gain;
+            let what = if a.state.contains("Revival_") { "resurrected" } else { "deathblow" };
+            log.push(format!("{what}: +{:.0} HP", a.hp_max * heal / 100.0), Color::srgb(1.0, 0.5, 0.5));
+        }
+        if posture > 0.0 && a.posture > 0.0 {
+            let back = (a.posture_max * posture / 100.0).min(a.posture);
+            a.posture -= back;
+            log.push(format!("deathblow: -{back:.0} posture"), Color::srgb(0.9, 0.8, 0.4));
+        }
+    }
+    // Weapon style (TAE 32 SetWeaponStyle): "0: None" = sheathed (the blade rests in the scabbard,
+    // WepAbsorpPosParam rightHang_0), "1: Right Weapon One-Handed" = in the hand.
+    if let Some(an) = d.anim(&a.anim).filter(|_| a.prev_t < a.t) {
+        let style = an.events.iter().filter(|e| e.kind == 32 && one_shot_starts(e.start, a.prev_t, a.t)).filter_map(|e| e.args.get("WeaponStyle")?.as_str()).last();
+        if let Some(style) = style {
+            a.sheathed = style.starts_with('0');
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decide(
     mut commands: Commands,
@@ -3374,76 +3460,6 @@ fn decide(
             s.0 = true;
         }
     }
-    // One-shot recoveries from the TAE's AddSpEffect (motionInterval 999: applied once): the
-    // resurrection's 110015 "HP Half Recovery" (changeHpRate -50 -> +50 % of max HP, frame 0) and
-    // the deathblow's (a20x_510xxx at the kill frame): 105050 posture 34 % for everyone, and the
-    // skills' 150301 / 150311 HP 10 % and 150321 / 150331 posture 34 %, which work only while the
-    // skill's permit stateInfo (986 / 987 / 984 / 985, invocationConditionsStateChange1) is on Wolf.
-    // "Recovery prohibited by the Todome" (とどめスルーによる回復禁止: 105051, 150302 / 150312 /
-    // 150322 / 150332): Wolf's Todome anims a000_710205-7 add them (TAE 401, f0, effectEndurance
-    // -1, kept in `Player.held`); each shares its recovery's spCategory (179 / 175-178) at
-    // categoryPriority 2 vs 3, and the lower priority wins in a category, so after a Todome these
-    // recoveries do nothing.
-    if a.prev_t < a.t {
-        let states: Vec<i64> = crate::combat::skill_sp_effects(&combat, &config).filter_map(|se| se["stateInfo"].as_i64()).filter(|&s| s > 0).collect();
-        let (mut heal, mut posture) = (0.0f32, 0.0f32);
-        if let Some(an) = d.anim(&a.anim) {
-            let fired: Vec<(i64, &crate::data::SpEffect)> = an
-                .events
-                .iter()
-                .filter(|e| matches!(e.kind, 67 | 401) && one_shot_starts(e.start, a.prev_t, a.t))
-                .filter_map(|e| {
-                    let id = e.arg_i64("SpEffectID").unwrap_or(0);
-                    Some((id, d.sp_effects.get(&id.to_string())?))
-                })
-                .collect();
-            // A fired row that outranks a held one of its category replaces it: every deathblow
-            // clip's f0 105052 / 150303 / 150313 / 150323 / 150333 (priority 1, "release recovery
-            // prohibition") lift the 105051 / 1503x2 (priority 2, endurance -1) the Event7102xx
-            // clips put on; they stayed until a reset (round 30).
-            for &(_, s) in &fired {
-                if s.sp_category > 0 {
-                    p.held.retain(|h| d.sp_effects.get(&h.to_string()).is_none_or(|h| h.sp_category != s.sp_category || s.category_priority >= h.category_priority));
-                }
-            }
-            for &(id, s) in &fired {
-                if s.effect_endurance < 0.0 && s.sp_category > 0 && !p.held.contains(&id) {
-                    p.held.push(id);
-                }
-            }
-            let blocked = |s: &crate::data::SpEffect| {
-                s.sp_category > 0
-                    && p.held.iter().filter_map(|h| d.sp_effects.get(&h.to_string())).any(|h| h.sp_category == s.sp_category && h.category_priority < s.category_priority)
-            };
-            for s in fired.iter().map(|f| f.1).filter(|s| s.motion_interval >= 999.0 && !blocked(s)) {
-                let conds = [s.invocation_conditions_state_change1, s.invocation_conditions_state_change2, s.invocation_conditions_state_change3];
-                if conds.iter().any(|&c| c > 0) && !conds.iter().any(|c| *c > 0 && states.contains(c)) {
-                    continue;
-                }
-                heal += (-s.change_hp_rate).max(0.0);
-                posture += s.change_stamina_rate.max(0.0);
-            }
-        }
-        if heal > 0.0 {
-            let gain = (a.hp_max * heal / 100.0).min(a.hp_max - a.hp);
-            a.hp += gain;
-            let what = if a.state.contains("Revival_") { "resurrected" } else { "deathblow" };
-            log.push(format!("{what}: +{:.0} HP", a.hp_max * heal / 100.0), Color::srgb(1.0, 0.5, 0.5));
-        }
-        if posture > 0.0 && a.posture > 0.0 {
-            let back = (a.posture_max * posture / 100.0).min(a.posture);
-            a.posture -= back;
-            log.push(format!("deathblow: -{back:.0} posture"), Color::srgb(0.9, 0.8, 0.4));
-        }
-    }
-    // Weapon style (TAE 32 SetWeaponStyle): "0: None" = sheathed (the blade rests in the scabbard,
-    // WepAbsorpPosParam rightHang_0), "1: Right Weapon One-Handed" = in the hand.
-    if let Some(an) = d.anim(&a.anim).filter(|_| a.prev_t < a.t) {
-        let style = an.events.iter().filter(|e| e.kind == 32 && one_shot_starts(e.start, a.prev_t, a.t)).filter_map(|e| e.args.get("WeaponStyle")?.as_str()).last();
-        if let Some(style) = style {
-            a.sheathed = style.starts_with('0');
-        }
-    }
     // Sheathe / draw (X): HKS BEH_R_NON_COMBAT_AREA_ENTER / LEAVE, standing or moving variant
     // (GroundNonCombatArea[Move]Enter a000_700500 / 700501, Leave 700510 / 700511). Sheathed, an
     // attack / guard / art / prosthetic press draws the sword instead (Sekiro has no sword
@@ -3643,7 +3659,7 @@ fn decide(
             }
         }
         // The choice opens once the loop has advanced past its f0 refresh events (8002-8009 cure,
-        // read by apply_refresh_effects after decide with prev_t < t): a press on the loop's
+        // applied by apply_refresh_effects after the step that enters them): a press on the loop's
         // first two ticks revived Wolf still poisoned / burning (2026-10-12 round 23).
         let in_loop = matches!(
             a.state.as_str(),

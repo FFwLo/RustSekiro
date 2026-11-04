@@ -297,9 +297,47 @@ Not covered (gap): the old clip's last step on the frame a reaction starts (the 
 more: its root motion is kept through the blend, its TAE window is not); attack windows of a clip
 `decide` replaces in the same tick; enemies' frame labels (their AI decides in `decide`, the exe's
 HKS of the frame before, so only Wolf's pad needed the delay; the General's frames were logged but
-not compared with Sv1's); hit-stop frames; (a bullet's hit timing: traced 2026-11-04, "A bullet's
-hit timing" below); other TAE events `decide` still reads a tick after the step (one-shot
-SpEffects 401 / 67, weapon style 32): the exe runs them in the step's frame.
+not compared with Sv1's); hit-stop frames (done 2026-11-04, kb/modticks.md "Which frame a hit's stop starts on"); (a bullet's hit timing: traced 2026-11-04, "A bullet's
+hit timing" below); other TAE events `decide` read a tick after the step (one-shot
+SpEffects 401 / 67, weapon style 32): the exe runs them in the step's frame (fixed 2026-11-04,
+"One-shot TAE events' frame" below).
+
+## One-shot TAE events' frame (2026-11-04, frameorder, row E4)
+
+How: `emu-cases <exe> extracted/emu frameorder [frameorder_<act>...] --snapshot <dir>`
+(`tools/emu-cases/src/frameorder.rs`) runs Wolf's whole chr frames `FUN_140a4b570` through acttrace's acts
+(attack, art, deflect, step, jump, prosthetic) and `style` (standing; his idle a000_000000 given two
+synthetic TAE 32 events, as taewin's synthetic lists, since none of the acts' clips carries a 32). Hooks
+log in call order the TAE update `FUN_140b5c920` (clip, prev, cur), the Havok step `FUN_141015fa0`, the
+replay `FUN_140b5c730`, the event dispatcher `FUN_140b59170`'s handlers for 32 (`FUN_140b509b0`), 66 / 67
+(`FUN_140b56500`, r8 0 / 1) and 401 (`FUN_140b56750`) with the event's arg and entered byte (+0x18), and
+the SpEffect add `FUN_1409e9c00` on Wolf. 7 runs, 399 frames, 1,555 handler dispatches (84 entering),
+68 adds from them. Tests `one_shot_tae_events_land_in_the_steps_frame_in_the_exe`,
+`one_shot_tae_events_land_in_the_steps_tick` (`src/sim_tests/emu_frameorder.rs`).
+
+**What the exe does.** The handlers run inside the frame's Havok step (with the multithreaded flag
+clear, as in the snapshot, the TAE update dispatches there; never in the replay), on every update the
+event overlaps. A 67 / 401 adds its SpEffect only on the update that enters the event (the window rule,
+kb/taewin.md; on later updates no add: 16 entering dispatches added nothing, the effect already on);
+every entering update matched `tae_window::starts` on its (prev, cur). So the SpEffect is on in the frame
+whose step enters the event, before that frame's HKS and its SpEffect tick (vf25 -> vf44). The 32
+handler writes the style on each overlapping update (gated by vfunc 0x1a8 only), first in the entering
+step (`style`: frame 4 for the event 3.5 frames ahead).
+
+**What changed in Sv1.** Its one-shots were read in `decide` on the window the last `advance` took, so
+they landed a tick after the step: the TAE 32 weapon style, the one-shot recoveries (110015 half HP,
+105050 / 1503x1 posture and HP, the Todome 105051 / 1503x2 held rows) and `apply_refresh_effects` (401 /
+67 refresh rows: 8002-8009 cure, 8001 posture, Ichimonji's 140210). Now `player::tae_one_shots` and
+`apply_refresh_effects` run right after `ActorSet::Advance` (before `resolve_throws` and the poses) on
+the window that step took. `decide` of the next tick (the exe's HKS of this frame) sees them as the HKS
+does. Before -> after: the sheathe's style None (a000_700500 frame 14) and the revival's f0 effects
+(GroundRevival_F) on the tick after the entering step -> on it.
+
+Not covered (gap): enemies' TAE SpEffects (`enemy::think` reads 66 / 67 / 401 AI-state rows as a state
+at t, and `ffx.rs` / `CharData::sp_effects_at` treat 67 as on while the event overlaps, where the exe adds
+once on entry and the row's own endurance decides how long it lasts); the 66 handler (r8 0, not hit in
+these runs); which check stops a re-add (FUN_140bfefb0 / FUN_140c00340, the "already on" refresh) per row;
+a real clip's 32 (only the synthetic one ran); the 401 path in another state than the deflect's f0.
 
 ## The HKS's stick (2026-11-04, hksstick, row E1)
 

@@ -58,8 +58,34 @@ reset FUN_140b975f0 when grounded. None holds a timer that shapes the feel.
 **Not covered.** The super armour timer and the damage reaction module: run 2026-11-03 below
 (they tick in ChrIns vf25's FUN_140a05060, not vf22). The ease-in (+0x12c) and
 the debug switch are 0 in the game; the port keeps the ease-in rule but only the 0 case is run.
-Which frame a hit's stop starts on (the damage module runs inside the defender's frame, so an
-attacker updated earlier in the same frame starts its stop on the next frame) is not compared.
+Which frame a hit's stop starts on: run 2026-11-04 below (the guess that the damage module runs
+inside the defender's frame was wrong: the hit step runs before every chr frame).
+
+## Which frame a hit's stop starts on (2026-11-04, hits_stop, row E3)
+
+How: `emu-cases <exe> extracted/emu "hits_stop_*" --snapshot <dir>` (tools/emu-cases/src/hits.rs): the
+`hits` duel (hit step FUN_1409a0dc0, the WorldChrMan pre tasks, both chr frames FUN_140a4b570, the post
+tasks) with the General's slash row AtkParam_Npc 10200100 given hitStopTime (+0x1c, which the attacker's
+start FUN_140b9cd90 reads) 0.1 and hitStopTime_Defencer (+0x1cc) 0.15 in the emulator's copy. Four duels
+of 75 frames: Wolf idle and guarding, each with the General's chr frame first (he is the attacker) and
+with Wolf's first (`_wfirst`). Per frame the hits and stops the hit step itself made (`step_hits`,
+`step_stops`) and both clocks chr+0x108.
+
+**What the exe does.** The hit (and the block) resolves in the hit step and both starts run there, before
+either chr frame: on the hit frame (40) both clocks are 0, Wolf's and the General's, in all four duels,
+so the chr order does not matter (the frames are identical with Wolf first). The General holds 4 frames
+then eases out over 0.1 s (0.00046, 0.00185, ... whole on frame 49); Wolf over 0.15 s (0.00021, 0.00082,
+..., whole on 52). No stop is started inside a chr frame.
+
+**Sv1** (`resolve` before `advance` for every actor, `combat::start_hit_stop`) gives the same clocks on
+the hit tick and the 15 after it for both sides, within 1e-6: matched as it was, no change. Test
+`hit_stops_start_on_the_hit_frame_for_both_sides` (sim_tests/emu_frameorder.rs).
+
+Not covered: a hit from inside a chr frame (bullets' hits are their own task, kb/frame-coverage.md "A
+bullet's hit timing"; remote hits come through PlayerIns vf22, online only); Wolf as the attacker with a
+stop (the General's NpcParam hitStopType is 0, so Wolf's own stop was not started in a run); the hit
+frame of these duels is 40 where `hits_g_open` (no stop) lands on 42 (not followed; the test aligns on
+each run's own hit frame).
 
 ## Super armour, the hit's zero amounts, frame order, umbrella arc, parts guard (2026-11-03, topic damagemod)
 

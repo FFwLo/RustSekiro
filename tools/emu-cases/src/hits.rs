@@ -210,6 +210,12 @@ fn duels() -> Vec<Duel> {
         d("w_deflect", 60, Pad::Attack(0), Foe::Stand { guard: true, deflect_at: Some(26) }, 2.0, None),
     ];
     // Guard taps k frames before the contact frame: the deflect window's edges.
+    // Row E3: the slash with a hit stop (attacker 0.1 s, defender 0.15 s), the General's frame
+    // first (he is the attacker) or Wolf's first.
+    for name in ["stop_g_open", "stop_g_open_wfirst", "stop_g_guard", "stop_g_guard_wfirst"] {
+        let pad = if name.contains("guard") { Pad::Guard } else { Pad::Idle };
+        v.push(d(name, 75, pad, Foe::Attack(3000), 2.5, None));
+    }
     for k in [1, 2, 3, 4, 6, 8, 10, 12, 14, 15, 16, 20, 24, 28] {
         v.push(d(&format!("g_tap{k}"), 60, Pad::Tap(CONTACT - k), Foe::Attack(3000), 2.5, None));
     }
@@ -275,6 +281,19 @@ fn duel(new_emu: &dyn Fn() -> Emu, out: &Path, d: &Duel) {
         println!("  AtkParam 10200100 row {row:#x}: guardCutCancelRate {}", emu.peek::<1>(row + 0x7c)[0] as i8);
         emu.raw_write(row + 0x7c, &[0]);
     }
+    if d.name.starts_with("stop_") {
+        // Row E3: the slash's AtkParam_Npc row given hitStopTime (+0x1c, which the attacker's start
+        // FUN_140b9cd90 reads) 0.1 and hitStopTime_Defencer (+0x1cc, FUN_140b9cfb0) 0.15 in the
+        // emulator's copy (the General's rows have none): which frame each side's clock stops on.
+        let out = emu.alloc(0x20);
+        emu.write(out, &[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let r = emu.call(ATK_ROW, &[out, 0, 10200100], &[]);
+        let row = emu.peek_u64(out + 0x10);
+        assert!(r.stopped.is_none() && row != 0, "AtkParam row lookup {:?}", r.stopped);
+        println!("  AtkParam 10200100 row {row:#x}: hitStopTime {} _Defencer {}", f32at(&mut emu, row + 0x1c), f32at(&mut emu, row + 0x1cc));
+        emu.raw_write(row + 0x1c, &0.1f32.to_le_bytes());
+        emu.raw_write(row + 0x1cc, &0.15f32.to_le_bytes());
+    }
     if let Some(p) = d.wolf_posture {
         emu.raw_write(wdata + 0x148, &p.to_le_bytes());
     }
@@ -331,10 +350,23 @@ fn duel(new_emu: &dyn Fn() -> Emu, out: &Path, d: &Duel) {
             stop = stop.or(emu.call(task, &[wcm, blk], &[]).stopped);
         }
         SEEN.lock().unwrap().anims.clear();
-        stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, g], &[0.0, DT]).stopped);
-        let g_anims = std::mem::take(&mut SEEN.lock().unwrap().anims);
-        stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, w.player], &[0.0, DT]).stopped);
-        let w_anims = std::mem::take(&mut SEEN.lock().unwrap().anims);
+        // Hits resolved (and stops started) by the hit step, before any chr frame.
+        let (step_hits, step_stops) = {
+            let s = SEEN.lock().unwrap();
+            (s.resolves.len(), s.stops.len())
+        };
+        // `_wfirst`: Wolf's chr frame before the General's (row E3: whether the order matters).
+        let (g_anims, w_anims) = if d.name.ends_with("_wfirst") {
+            stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, w.player], &[0.0, DT]).stopped);
+            let w_anims = std::mem::take(&mut SEEN.lock().unwrap().anims);
+            stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, g], &[0.0, DT]).stopped);
+            (std::mem::take(&mut SEEN.lock().unwrap().anims), w_anims)
+        } else {
+            stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, g], &[0.0, DT]).stopped);
+            let g_anims = std::mem::take(&mut SEEN.lock().unwrap().anims);
+            stop = stop.or(emu.call(CHR_FRAME, &[wcm, 0, w.player], &[0.0, DT]).stopped);
+            (g_anims, std::mem::take(&mut SEEN.lock().unwrap().anims))
+        };
         for task in TASKS_POST {
             stop = stop.or(emu.call(task, &[wcm, blk], &[]).stopped);
         }
@@ -367,7 +399,8 @@ fn duel(new_emu: &dyn Fn() -> Emu, out: &Path, d: &Duel) {
                 println!("    hit {} -> {}: guarded {} deflected {} hp {} posture {} knockback {} break {} broken {}", h["attacker"], h["defender"], h["guarded"], h["deflected"], h["hp_dmg"], h["posture_dmg"], h["knockback"], h["guard_break"], h["broken"]);
             }
         }
-        frames.push(json!({"f": f, "wolf": ws, "general": gs, "hits": hits, "stops": stops, "counts": counts, "records": head != 0}));
+        frames.push(json!({"f": f, "wolf": ws, "general": gs, "hits": hits, "stops": stops, "counts": counts, "records": head != 0,
+            "step_hits": step_hits, "step_stops": step_stops}));
         if stop.is_some() {
             stopped = stop.map(|(a, e)| format!("{a:#x} error {e}"));
             println!("  stopped {stopped:?} trail {:x?}", emu.st.trail);

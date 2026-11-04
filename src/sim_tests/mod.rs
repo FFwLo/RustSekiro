@@ -83,6 +83,7 @@ mod emu_bullets;
 mod emu_hksstick;
 mod emu_knockback;
 mod emu_wire;
+mod emu_frameorder;
 mod part12;
 mod part13;
 mod part14;
