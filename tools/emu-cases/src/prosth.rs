@@ -30,7 +30,11 @@
 //! PCBehavior FUN_140b55510 events of Wolf, the emitter FUN_1407d4fa0, every bullet spawn
 //! FUN_140b1ad20 (BulletParam id, matrix, the phase it ran in), SpEffects added FUN_1409e9c00 to
 //! Wolf or the General, AdjustItemCount FUN_14079ab70, the live bullet slots, the hits resolved
-//! (hits.rs fields), both chrs' state. Writes extracted/emu/prosth_<name>.json for
+//! (hits.rs fields), both chrs' state; for Wolf's attack records (+0x7c a BehaviorParam_PC id)
+//! each contact FUN_14099cbe0 and victim-list add, the General's hit intake FUN_140b68ff0 and
+//! FUN_140b6f690, and Wolf's victim levels (damage module +0x78: victim, level, hit; written
+//! by FUN_140b62c70 / FUN_140b62d70, cleared by FUN_140b62da0 as an anim starts). Writes
+//! extracted/emu/prosth_<name>.json for
 //! src/sim_tests/emu_prosth.rs.
 
 use std::ffi::c_void;
@@ -52,11 +56,20 @@ const BULLET_STEP: u64 = 0x1_40b1_c050;
 const SPAWN: u64 = 0x1_40b1_ad20;
 const SLOTS: u64 = 0x80;
 const SLOT_SIZE: u64 = 0xd30;
+/// The hit manager's contact of one attack record (rcx) with one victim (rdx: +8 its handle):
+/// first the record's three victim lists (+0x250 / +0x258 / +0x260), then the hit; +0x4f2 /
+/// +0x522 add the victim to a list.
+const HIT_CHECK: u64 = 0x1_4099_cbe0;
 /// The emblems' goods (inventory id 0x4000_0000 | 1000).
 const EMBLEM: u32 = 0x4000_03e8;
 
 /// (address, name) of the hooked calls.
-const WATCH: [(u64, &str); 7] = [
+const WATCH: [(u64, &str); 12] = [
+    (0x1_40b6_8ff0, "recv"),
+    (0x1_40b6_f690, "recv_ok"),
+    (HIT_CHECK, "hit_check"),
+    (HIT_CHECK + 0x4f2, "hit_list_add"),
+    (HIT_CHECK + 0x522, "hit_list_add"),
     (0x1_40b5_1110, "tae_bullet"),
     (0x1_40b5_0ae0, "tae_attack"),
     (0x1_40b5_5510, "tae_pc"),
@@ -137,6 +150,33 @@ extern "C" fn on_watch(uc: uc::Engine, addr: u64, _size: u32, _data: *mut c_void
                 return;
             }
             json!({"fn": name, "chr": who(rcx), "id": rdx as u32 as i32, "source": who(r8)})
+        }
+        // (record: +0 handle, +0x7c BehaviorParam_PC id: Wolf's only; +0x250 / 0x258 / 0x260 the victim lists).
+        "hit_check" | "hit_list_add" => {
+            // (list add: rcx the last record of the chain at +0x268, edx the victim handle.)
+            let rec = rcx;
+            let atk = rd_i32(uc, rec + 0x7c);
+            if !atk.is_some_and(|a| (100_000_000..200_000_000).contains(&a)) {
+                return;
+            }
+            let victim = if name == "hit_check" { rd_i32(uc, rdx + 8) } else { Some(rdx as u32 as i32) };
+            json!({
+                "fn": name, "rec": format!("{rec:#x}"), "handle": rd_i32(uc, rec), "atk": atk, "victim": victim, "next": format!("{:#x}", rd_u64(uc, rec + 0x268)),
+                "lists": ([0x250u64, 0x258, 0x260].iter().map(|o| format!("{:#x}", rd_u64(uc, rec + o))).collect::<Vec<_>>()),
+            })
+        }
+        // The defender's hit intake (rcx its damage module [bag +0x98]) and the resolve it gates:
+        // the bag's first module's +0x70 flags, the throw module [bag +0x88] +0x10 state.
+        "recv" | "recv_ok" => {
+            let bag = rd_u64(uc, general + 0x1ff8);
+            if rcx != rd_u64(uc, bag + 0x98) {
+                return;
+            }
+            let thr = rd_u64(uc, rd_u64(uc, bag + 0x88) + 0x10);
+            let state = if thr != 0 { rd::<1>(uc, thr + 0x18).map(|b| b[0] as i32) } else { None };
+            let flags = format!("{:#x}", rd_u64(uc, rd_u64(uc, bag) + 0x70));
+            let d9 = rd::<1>(uc, r8 + 0xd9).map(|b| b[0] as i32);
+            json!({"fn": name, "flags": flags, "throw": state, "d9": d9, "r9": (reg(uc, uc::R9) as u8)})
         }
         "adjust_count" => json!({"fn": name, "slot": rdx as u32 as i32, "delta": r8 as u32 as i32}),
         _ => return,
@@ -324,6 +364,10 @@ fn run_case(new_emu: &dyn Fn() -> Emu, out: &Path, c: &Case) {
     emu.poke_f32s(blk + 8, &[DT]);
     let (wdmod, gdmod) = (hits::module(&mut emu, w.player, 0x98), hits::module(&mut emu, g, 0x98));
     let dt_bits = DT.to_bits() as u64;
+    // Wolf's damage module +0x78: the victims his attacks touched (begin +0x88 / end +0x90,
+    // 16 bytes each: victim, level, hit). Writes to its end and to the entries are recorded.
+    emu.hook(HOOK_MEM_WRITE, on_write as *const c_void, wdmod + 0x88, wdmod + 0x97);
+    WRITES.lock().unwrap().clear();
     let mut frames = Vec::new();
     let mut stopped = None;
     for f in 0..c.frames {
@@ -343,6 +387,17 @@ fn run_case(new_emu: &dyn Fn() -> Emu, out: &Path, c: &Case) {
             SEEN.lock().unwrap().phase = name;
             if stop.is_none() {
                 stop = run(&mut emu);
+            }
+            let ws = std::mem::take(&mut *WRITES.lock().unwrap());
+            let (b, e) = (emu.peek_u64(wdmod + 0x88), emu.peek_u64(wdmod + 0x90));
+            if !ws.is_empty() || (name == "hit_step" && e > b) {
+                let entries: Vec<Value> = (0..((e.saturating_sub(b)) / 16).min(8)).map(|i| {
+                    let at = b + 16 * i;
+                    let lv = emu.peek::<2>(at + 8);
+                    json!({"victim": format!("{:#x}", emu.peek_u64(at)), "level": lv[0] as i8, "hit": lv[1]})
+                }).collect();
+                let rips: Vec<String> = ws.iter().map(|(rip, a, v)| format!("{:#x}@{rip:#x}={v:#x}", a - wdmod)).collect();
+                SEEN.lock().unwrap().events.push(json!({"fn": "victims", "phase": name, "writes": rips, "entries": entries}));
             }
             if name == "bullets" {
                 moved = slots(&mut emu, pool);

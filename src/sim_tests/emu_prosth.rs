@@ -162,7 +162,8 @@ fn both(name: &str) -> Option<(Run, Run)> {
 /// 790004 chain, the firecracker's carriers and their first sparks (enemy_bullet::interval_child).
 /// Not compared: the firecracker's bursts 710003 / 710013 and the sparks after the first (their
 /// life is drawn from lifeRandomRange; the exe's random stream is not ours), and hits wherever
-/// the General's walk-in (AI on in the exe, off here) changes the geometry (axe, Sabimaru, spears).
+/// the General's walk-in (he steps in from his 1040 in the exe, stands here) changes the geometry
+/// (axe, Sabimaru; the spears' contacts fall on the same frames in both).
 #[test]
 pub(crate) fn prosthetic_tools_follow_the_exe_frame_for_frame() {
     let mut n = 0;
@@ -183,13 +184,50 @@ pub(crate) fn prosthetic_tools_follow_the_exe_frame_for_frame() {
                 assert_eq!(first(&ours), first(&exe), "firecracker: first {spark}");
             }
         }
-        if ["shuriken_tap", "shuriken_hold", "flame_vent", "okinaga_vent", "mist_raven", "umbrella", "divine_abduction", "whistle", "firecracker"].contains(&name) {
+        if ["shuriken_tap", "shuriken_hold", "flame_vent", "okinaga_vent", "mist_raven", "umbrella", "divine_abduction", "whistle", "firecracker", "spear", "spiral_spear"].contains(&name) {
             assert_eq!(ours.hits, exe.hits, "{name}: hits");
         }
     }
     if n == 0 {
         eprintln!("skip: no extracted/emu/prosth_*.json (tools/emu-cases prosth)");
     }
+}
+
+/// The spear's thrust: three overlapping AttackBehavior windows (root 107 level 0, middle 106
+/// level 1, tip 105 level 2). In the exe each touches the General (the hit manager's contact
+/// FUN_14099cbe0 puts him on its record's list: middle at 47, tip at 49) but only the root's hit
+/// at 45 lands: his victim level 0 is hit, and 1 / 2 are not below it (combat::victim_level).
+/// Ours lands the same one hit; before, every window hit (45, 47, 49).
+#[test]
+pub(crate) fn the_spears_three_windows_hit_once_like_the_exe() {
+    let Some(v) = load("spear") else { return };
+    let touched: Vec<(usize, i64)> = v["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .flat_map(|(f, fr)| fr["events"].as_array().unwrap().iter().filter(|e| e["fn"] == "hit_list_add").map(move |e| (f, e["atk"].as_i64().unwrap())))
+        .collect();
+    if touched.is_empty() {
+        eprintln!("skip: prosth_spear.json has no hit records (an older run)");
+        return;
+    }
+    assert_eq!(touched, vec![(45, 107800107), (47, 107800106), (49, 107800105)], "the exe's contacts");
+    let exe = exe_run(&v);
+    assert_eq!(exe.hits, vec![45]);
+    let ours = sim_run(78000, 3, v["dist"].as_f64().unwrap() as f32, 60);
+    assert_eq!(ours.hits, exe.hits);
+    // The rule itself: a lower level after a hit lands again; equal or higher does not; 255 always.
+    let mut w = World::new();
+    let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
+    let mut l = Vec::new();
+    assert!(crate::combat::victim_level(&mut l, a, 1));
+    assert!(!crate::combat::victim_level(&mut l, a, 1));
+    assert!(!crate::combat::victim_level(&mut l, a, 2));
+    assert!(crate::combat::victim_level(&mut l, a, 0));
+    assert!(!crate::combat::victim_level(&mut l, a, 0));
+    assert!(crate::combat::victim_level(&mut l, a, -1));
+    assert!(crate::combat::victim_level(&mut l, b, 2));
 }
 
 /// Exploration: every recorded tool, the exe's run and ours side by side.

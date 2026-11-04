@@ -253,6 +253,9 @@ pub struct Actor {
     /// AttackBehavior windows already resolved in the current anim, per defender: (defender,
     /// judge, start). One window hits each target once, so a swing through two enemies hurts both.
     pub hits_done: Vec<(Entity, i64, i32)>,
+    /// The victims this anim's leveled windows touched: (victim, lowest level, hit since)
+    /// (`combat::victim_level`; the exe's damage module +0x78, cleared as an anim starts).
+    pub hit_levels: Vec<(Entity, i8, bool)>,
     /// This character's bullets that touched someone (target, the bullet's AtkParam): combat.rs
     /// resolves them like a connected AttackBehavior window (enemy_bullet.rs fires NPC bullets).
     pub bullet_hits: Vec<(Entity, crate::data::Attack)>,
@@ -479,6 +482,7 @@ impl Actor {
             resident: Vec::new(),
             item_sp: Vec::new(),
             hits_done: Vec::new(),
+            hit_levels: Vec::new(),
             bullet_hits: Vec::new(),
             anim_group: 0,
             anim_keys: None,
@@ -566,6 +570,7 @@ impl Actor {
         self.prev_t = 0.0;
         self.fresh = true;
         self.hits_done.clear();
+        self.hit_levels.clear();
         self.vel_change_done = false;
         self.yaw_scale = 1.0;
     }
@@ -613,9 +618,9 @@ impl Actor {
     /// `SetVariable("StartTime_00", env(3063, 0) / 1000)` before a land-continuation event
     /// (AirComboAttackN -> LandAirComboAttackN share the first frames of their TAE).
     pub fn continue_state(&mut self, data: &CharData, state: &str) -> bool {
-        let (t, hits) = (self.t, std::mem::take(&mut self.hits_done));
+        let (t, hits, levels) = (self.t, std::mem::take(&mut self.hits_done), std::mem::take(&mut self.hit_levels));
         if !self.play_state(data, state) {
-            self.hits_done = hits;
+            (self.hits_done, self.hit_levels) = (hits, levels);
             return false;
         }
         self.start_at(t);
@@ -624,6 +629,7 @@ impl Actor {
             h.hits = hits.clone();
         }
         self.hits_done = hits;
+        (self.hits_done, self.hit_levels) = (hits, levels);
         true
     }
 

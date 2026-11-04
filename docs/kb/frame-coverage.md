@@ -645,11 +645,32 @@ Gaps:
 - Random draws: the exe's stream (FUN_141157720) is not ours, so the firecracker's later sparks and
   bursts 710003 / 710013 (lifeRandomRange 0.5) are not compared; the exe's run has one of each
   spark first live a frame later (38), not explained.
-- Hits where the General walks in: the exe's General is AI-on (anim 1040 walks him from 3 to
-  0.8 m), ours stands still, so the axe (ours hits at 75, the exe none), Sabimaru (exe 39, ours
-  33: its slash reaches him late at 0.73 m) and spears are not compared. Open lead: the spear's
-  three overlapping windows (judges 107 root, 106 middle, 105 tip, f44 - 52) hit once in the exe
-  (at 45, then he is 0.95 - 1.5 m away in 8010) and three times in ours (hits_done per window).
+- Hits where the General walks in: the exe's General steps in on his 1040 (from 3 to 0.8 m;
+  the snapshot's AI-off flag 0x143d7a376 is left as saved), ours stands still, so the axe (ours
+  hits at 75, the exe none) and Sabimaru (exe 39, ours 33: its slash reaches him late at
+  0.73 m) are not compared. The spears' contacts fall on the same frames in both and are.
+
+### Victim levels: one thrust, one hit (2026-11-04, prosth_spear)
+
+The spear's thrust has three overlapping AttackBehavior windows (judges 107 root, 106 middle,
+105 tip, f44 - 52); the exe lands one hit (45), ours landed three (45, 47, 49). Watching the
+hit records shows the middle and tip DO touch the General at 47 / 49 (the contact FUN_14099cbe0
+puts him on each record's own victim list) but never reach his intake FUN_140b68ff0. The gate
+is on the attacker:
+- Each AttackBehavior event has a hit level, its byte +0xc (the TAE template's "DirectionType";
+  FUN_140b50ae0 passes it to the attack's records, descriptor +0xfd; 255 = none). Spear root 0,
+  middle 1, tip 2; Sabimaru 255; 136 of Wolf's clips use two or more levels.
+- The attacker's damage module +0x78 keeps (victim, level, hit) entries, emptied (FUN_140b62da0)
+  as the attacker starts an anim. A contact of a leveled window files the victim at the lowest
+  level so far, and a strictly lower level clears his hit (FUN_140b62c70). Then it lands only
+  if he has no hit or its level is below his (FUN_140b62e20); either way he is now hit
+  (FUN_140b62d70), and the window's own list keeps it from trying him again.
+- Ours: `combat::victim_level` on `Actor::hit_levels` (cleared with hits_done as an anim plays,
+  kept through continue_state like hits_done; gap: the exe empties it on that anim start too),
+  for every character's windows; bullets are not leveled. Test
+  `the_spears_three_windows_hit_once_like_the_exe`.
+- gap: where the exe checks dodges against the level (ours marks only a contact that is not
+  dodged), and the level path inside the contact search FUN_14099b3f0 (a second check there).
 - The menu equip call itself, the parts model load of a tool not resident, the switch's own
   frames (the case waits 86 Wolf-only frames for the deploy), Wolf's SpEffects and the attack
   amounts (only "took HP or posture" is compared), mist raven's warp and Divine Abduction's grab,

@@ -994,6 +994,35 @@ pub(crate) fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
     ((p1 + d1 * s) - (p2 + d2 * t)).length()
 }
 
+/// The exe's per-attacker victim levels (damage module +0x78, cleared as an anim starts;
+/// FUN_140b62c70 / FUN_140b62e20 / FUN_140b62d70 from the hit manager's contact
+/// FUN_14099cbe0): a window whose AttackBehavior level (`Event::hit_level`) is 0 or more files
+/// the victim at the lowest level touched so far, and a lower level than before clears his "hit".
+/// It lands if he has no hit since, or its level is below his; either way he is now hit. A
+/// window without a level (255) is not checked. Returns whether the contact lands; a spent one
+/// still uses up the window. The spear's thrust (root 107 at level 0, middle 106 at 1, tip 105
+/// at 2, overlapping) hits once in the exe: middle and tip touch the General at frames 47 / 49
+/// and are dropped (tools/emu-cases `prosth_spear`, the hit records watched).
+pub(crate) fn victim_level(levels: &mut Vec<(Entity, i8, bool)>, victim: Entity, level: i8) -> bool {
+    if level < 0 {
+        return true;
+    }
+    match levels.iter_mut().find(|e| e.0 == victim) {
+        Some(e) => {
+            if e.1 > level {
+                (e.1, e.2) = (level, false);
+            }
+            let lands = !e.2 || level < e.1;
+            e.2 = true;
+            lands
+        }
+        None => {
+            levels.push((victim, level, true));
+            true
+        }
+    }
+}
+
 /// Fallback hurtbox when a character has no ragdoll capsules (headless tests): a body
 /// capsule from feet + 0.3 m to feet + 1.5 m, radius 0.4.
 pub(crate) const BODY_RADIUS: f32 = 0.4;
@@ -1905,6 +1934,8 @@ fn resolve(
                 // a reaction replaced still swings on this tick, as the exe's hit step tests the
                 // records the last step kept (tools/emu-cases framewin).
                 .attack_windows_on(aa.tae_anim(), gates.as_deref())
+            let mut windows: Vec<(i32, i64, Attack, bool, bool, i8)> = ad
+                .attack_windows_on(&aa.anim, gates.as_deref())
                 .into_iter()
                 .filter_map(|(e, atk, j)| match &worn {
                     Some(w) if crate::data::shift_judge(j, w) != j => {
@@ -1919,18 +1950,22 @@ fn resolve(
                 // him and dont do dmg as the game").
                 .filter(|(e, atk, _)| e.dispatched(aa.tae_step()) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
                 .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false, e.source_hand() == 1))
+                .filter(|(e, atk, _)| e.dispatched(aa.step()) && atk.oppose_target != 0 && (atk.atk_stam > 0.0 || atk.npc_damage() > 0.0 || atk.direct_atk_stam_damage > 0.0 || atk.sp_effects().iter().any(|&s| s > 0)))
+                .map(|(e, atk, j)| ((e.start * TAE_FPS).round() as i32, j, atk.clone(), false, e.source_hand() == 1, e.hit_level()))
                 .collect();
             // The attacker's bullets that reached this defender (enemy_bullet.rs): already
             // connected, so only the dodge check and the outcome below apply.
             let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut aa.bullet_hits).into_iter().partition(|(t, _)| *t == def_e);
             aa.bullet_hits = rest;
-            windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true, false)));
+            windows.extend(mine.into_iter().map(|(_, atk)| (i32::MIN, -1, atk, true, false, -1)));
             // The first swing window this tick's outcome: a second one landing on the same tick
             // (c1700 Attack3076's two blades, judges 160 + 161) meets the same guard, not the
             // deflect / damage reaction the first just started (play_state resets anim / t).
             let mut tick_outcome: Option<Outcome> = None;
             for (start, judge, atk, bullet, right_hand) in windows {
                 if !bullet && aa.hit_done(&(def_e, judge, start)) {
+            for (start, judge, atk, bullet, right_hand, level) in windows {
+                if !bullet && aa.hits_done.contains(&(def_e, judge, start)) {
                     continue;
                 }
                 let to_def = (dtf.translation - atf.translation).with_y(0.0);
@@ -2004,6 +2039,13 @@ fn resolve(
                     continue;
                 }
                 aa.mark_hit((def_e, judge, start));
+                aa.hits_done.push((def_e, judge, start));
+                // A leveled window touching someone an equal or lower level already hit in this
+                // anim is spent without a hit (the spear's root 0 / middle 1 / tip 2: one thrust,
+                // one hit; tools/emu-cases `prosth_spear`).
+                if !bullet && !victim_level(&mut aa.hit_levels, def_e, level) {
+                    continue;
+                }
                 aa.attack_hit = true;
                 // AtkParam HitAiSoundId: once per target the attack lands on, guarded or not
                 // (FUN_1409e68e0 after the damage call), at the hit (the defender here).

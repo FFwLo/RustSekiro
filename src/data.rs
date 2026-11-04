@@ -59,6 +59,12 @@ impl Event {
             None => 0,
         }
     }
+    /// AttackBehavior's hit level: the event's byte +0xc (the template's "DirectionType"), as a
+    /// signed byte; 255 (-1) for none. FUN_140b50ae0 hands it to the attack's hit records; see
+    /// `combat::victim_level` for what it does.
+    pub fn hit_level(&self) -> i8 {
+        self.arg_i64("DirectionType").unwrap_or(255) as u8 as i8
+    }
     /// ChrActionFlag FlagType is "87: Name" when the template knows it, else a bare number.
     pub fn flag_type(&self) -> Option<i64> {
         match self.args.get("FlagType")? {
