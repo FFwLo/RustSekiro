@@ -296,8 +296,8 @@ Not covered (gap): the old clip's last step on the frame a reaction starts (the 
 more: its root motion is kept through the blend, its TAE window is not); attack windows of a clip
 `decide` replaces in the same tick; enemies' frame labels (their AI decides in `decide`, the exe's
 HKS of the frame before, so only Wolf's pad needed the delay; the General's frames were logged but
-not compared with Sv1's); hit-stop frames; a bullet's hit timing (the exe's bullet update is a
-world task, not traced); other TAE events `decide` still reads a tick after the step (one-shot
+not compared with Sv1's); hit-stop frames; (a bullet's hit timing: traced 2026-11-04, "A bullet's
+hit timing" below); other TAE events `decide` still reads a tick after the step (one-shot
 SpEffects 401 / 67, weapon style 32): the exe runs them in the step's frame.
 
 ## Item use and prosthetic bullets (2026-11-03, items)
@@ -357,3 +357,82 @@ Compared with RSekiro (`src/sim_tests/emu_items.rs`):
   and tools are not run. The General runs only behaviour 3000.
 - Names of the new branches come from a read of their first lines (strings, RTTI, fields);
   "(?)" ones are guesses.
+
+## A bullet's hit timing (2026-11-04, bullets)
+
+How: `emu-cases <exe> extracted/emu bullets [bullets_<case>...] --snapshot <dir>`
+(`tools/emu-cases/src/bullets.rs`) runs whole world frames as `hits` does with the bullet step in
+front: per frame the BulletMan step, the hit manager step `FUN_1409a0dc0`, the WorldChrMan pre
+tasks, the General's chr frame (AI off, updated every frame), Wolf's, the post tasks. Wolf (placed
+4 / 6 / 8 m in front of the General, facing him) uses a Pellet (goods 3020, items.rs); at the spawn
+`FUN_140b1ad20` the record's BulletParam id (+0x10) becomes the shuriken's 700000 and its emit
+matrix (+0x40) points from the hand at the General's chest. Per frame: each live bullet slot after
+the bullet step and after the whole frame, both chrs' state (hits.rs), every resolve with the
+phase it ran in, the watched functions per phase. Test
+`a_thrown_shuriken_flies_and_lands_like_the_exe` (`src/sim_tests/emu_bullets.rs`).
+
+**Where bullets run.** MoveMapStep registers its update tasks with groups: `FUN_140a74560` at
++0x270 group 0x47, the hit manager's `FUN_140a746f0` at +0x298 group 0x4b, `FUN_140a74c80` at
++0x2c0 group 0x55, the chr frames `FUN_140a70020` group 0x52. `FUN_140a74560` calls
+`FUN_140a74ce0` (when MoveMapStep +0x318 is set), which runs the BulletMan step
+`FUN_140b1c050([0x143d84f70], FD4Time)`: `FUN_140b1f390` (the +0x28 list), `FUN_140b1edd0` (the
+bullets: `FUN_140b13770` per live slot), `FUN_140b1f4b0` (+0x48 list), `FUN_140b1f020` unless
++0x68, `FUN_140b1eee0` (counters). So a world frame is: bullets move, hits land (melee and bullet
+alike), then the chrs step, where a TAE BulletBehavior spawns a bullet.
+
+**The slot** (0x80 x 0xd30 at [BulletMan]+0): +8 handle, +0x10 position, +0x4b4 BulletParam id,
++0xb60 metres flown, +0xc6c flags (1 live, 4 ended: 0x29 flying, 0xbd ended), the fly state
+`FUN_140b0ded0` runs on at +0xcb0 (+0x24 its age = slot +0xcd4, +0x31 launched).
+
+**What a bullet does, frame by frame** (shuriken 700000: 80 m/s, dist 5, accelOutRange -40,
+gravityOutRange 5, life 0.5; spawned on frame S in Wolf's chr frame):
+
+| Frame | 4 m | 8 m |
+|---|---|---|
+| S+1 | launched: the first update only sets +0x31 (no homing, speed or move), age 1/60; its attack record is issued (`FUN_1409a1290`) and tested where it stands | same |
+| S+2, S+3 | 1.333 m a frame | same, to 5.333 m at S+5 |
+| next | | past `dist`: 1.322 m (79.33 m/s) at S+6 |
+| hit | S+4: the bullet step moves it the whole 1.333 m (4.0 m), the hit step finds the General, puts it where it touched (3.57 m out) and ends it (flags 0xbd); posture 14 | S+7 (7.97 m) |
+| hit + 1 | its HitBulletID 700001 (dummy, speed 0, life 0.15) is made there in the bullet step and launched; it resolves a 0 / 0 hit; the General's reaction a000_008000 takes its first step | same |
+| hit + 2 | the General's knockback starts (as a sword hit's, h + 2) | |
+| hit + 10 | the dummy ends (age 10/60 > 0.15) | |
+| hit + 11 | 700002 is made at the dummy and hits in that frame's hit step (posture 21); then 700003 (dummy), and 700004 at hit + 22 (posture 36); the reaction restarts the frame after each, 700004's is a000_008010 | same |
+
+The spawn re-aims the written direction: every throw flew straight at the General's root in
+plan and rose at the same 6.3 deg (0.11 m a metre) whatever pitch was written, so it touched him
+1.7 m up from 4 m and 2.1 m up from 8 m. Aimed 4 m (34 deg) or 12 m (63 deg, past the Bullet's
+lockShootLimitAng 45) to his side from 6 m it still flew at him and hit on S+6 (the two runs are
+the same frame for frame). The first update also shifts the bullet 9 mm off the hand (not traced).
+
+**Sv1 before / after.**
+- prosthetic.rs flew a bullet in its spawn tick (`spawn_bullets` and `fly_bullets` chained after
+  the step), so the shuriken hit two ticks early (S+2 from 4 m), and its hit, applied there (the
+  exe's hit step of the next frame), started a reaction that stepped in the next tick: a frame
+  before the exe's. Its HitBulletID child started where the whole step ended, up to 1.3 m past the
+  body. Now: `fly_bullets` runs after `decide` / `clear_fresh`, before `resolve` (the bullet task
+  and hit step of the tick's frame); `spawn_bullets` stays after the step; a bullet's first fly
+  only sets `Projectile::launched` (age counts, hit tested where it stands); a stopping hit puts it
+  where it first touched (`first_touch`) and its child starts there; a tool hit's knockback waits
+  2 as a sword hit's (was 1). The dummy 700001 (no damage, isPenetrate 1) ended on touching him
+  (the carrier rule for the Fistful of Ash's 3511), so the chain's next hit came 2 ticks after the
+  first, not 11: the rule now skips piercing bullets.
+- The test throws ours level at our General's chest from as far before the point it first
+  touches him as the exe's throw was (3.56 / 5.52 / 7.54 m): our hurt capsules and pose are not
+  the snapshot's (our head capsule tops out about 2.0 m; the exe's 8 m throw touched at 2.1 m), so
+  the run is placed by that distance and compares frames, not shapes. Matched: metres flown each
+  frame (within 2 mm), the frame it ends, the three hit frames (4 / 15 / 26, 6 / 17 / 28,
+  7 / 18 / 29), the reaction's first step (5, 7, 8).
+- enemy_bullet.rs: `fly` runs after `fire` in the step's tick, which already stands for the exe's
+  next bullet task (its hits on Wolf go to the next `resolve`, the exe's hit step); it now skips
+  the first update too (`EnemyBullet::launched`: no follow, homing, speed or move).
+
+Not covered (gap): enemy bullets (no enemy shoots in the snapshot scene; the rule is the exe's one
+bullet update for all); where the spawn re-aims (the target point, inside FUN_140b1ad20's path;
+ours aims in spawn_bullets at the lock target); the 9 mm first-update shift; the 0-damage hit of
+the dummy bullets (no effect seen); the hurt shapes: the emulator's General drifted 0.48 m in his
+idle while his ragdoll bodies stayed where the snapshot had him (the stop point fits that body,
+0.21 - 0.27 m short of its axis), and ours are other shapes (the test matches the distance to the
+touch, not the touch); amounts
+(posture 14 / 21 / 36 come from the Pellet's record, not a shuriken throw's attack power); a
+deflected or guarded bullet; bullets hitting the map; other bullet kinds (fans, interval
+children, growing radius, homing).

@@ -50,6 +50,7 @@ mod air;
 mod hits;
 mod animstart;
 mod worldbackread;
+mod bullets;
 
 /// The few calls of Unicorn's C API the tool needs (unicorn.h), linked from unicorn.dll.
 mod uc {
@@ -924,6 +925,9 @@ fn main() {
     }
     if want.first().is_some_and(|w| w.starts_with("animstart")) {
         return animstart::run(&|| Emu::new(exe, snap()), out, &want);
+    }
+    if want.first().is_some_and(|w| w.starts_with("bullets")) {
+        return bullets::run(&|| Emu::new(exe, snap()), out, &want);
     }
     if want.first().is_some_and(|w| w.starts_with("hits")) {
         return hits::run(&|| Emu::new(exe, snap()), out, &want);

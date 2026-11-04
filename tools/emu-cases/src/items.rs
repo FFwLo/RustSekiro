@@ -133,7 +133,7 @@ extern "C" fn on_tae(uc: uc::Engine, _addr: u64, _size: u32, _data: *mut c_void)
 /// Inventory entries of Wolf's PlayerGameData ([chr+0x2000] +0x278 inventory, +0x168 list:
 /// [+0x88]+1 slots; slot < [+0x24] at [+0x58] + 0x10 * slot, else [+0x48] + 0x10 * (slot - [+0x24]);
 /// entry +4 item id, +8 count; FUN_1407aabf0). (slot, id, count, entry address).
-fn inventory(emu: &mut Emu, chr: u64) -> Vec<(u32, u32, i32, u64)> {
+pub(super) fn inventory(emu: &mut Emu, chr: u64) -> Vec<(u32, u32, i32, u64)> {
     let pgd = emu.peek_u64(chr + 0x2000);
     let list = pgd + 0x278 + 0x168;
     let n = u32::from_le_bytes(emu.peek(list + 0x88)).wrapping_add(1);

@@ -12,7 +12,10 @@
 //! attack for the Lightning Reversal (combat.rs). A life of -1 lasts (the signs 53100681).
 //! Flight as the exe's bullet update (FUN_140b0ded0): homing (`steer`, FUN_140b11270), then
 //! acceleration, gravity and the speed limits (`flight`, FUN_140b14650), then the move; the map
-//! collision stops a bullet unless isPenetrateMap.
+//! collision stops a bullet unless isPenetrateMap. Its first update (the bullet task of the
+//! frame after the TAE fired it) only marks it launched (kb/frame-coverage.md "A bullet's hit
+//! timing"). `fly` runs after the step, as the exe's next bullet task, and its hits on Wolf
+//! go to the next `resolve`, the exe's hit step of that frame.
 //! Past `dist` its hits lose damageDamp / staminaDamp / knockbackDamp percent per second
 //! (Attack::decayed, after sekiro-rs bullets.rs).
 //! FollowType 3 (follow the target: the Divine Dragon's 52000980) rides on Wolf.
@@ -43,6 +46,8 @@ pub struct EnemyBullet {
     /// The way it was fired (a bullet fired at speed 0 speeds up along it).
     facing: Vec3,
     travelled: f32,
+    /// Its first update ran (the fly state's +0x31, FUN_140b0ded0): that one only sets it.
+    launched: bool,
     /// Seconds flown past `dist` (the damp decay).
     out_of_range: f32,
     age: f32,
@@ -344,6 +349,7 @@ fn spawn_chain(commands: &mut Commands, spec: &BulletSpec, shooter: Entity, kind
                 vel: d * spec.init_vellocity,
                 facing: d,
                 travelled: 0.0,
+                launched: false,
                 out_of_range: 0.0,
                 age: 0.0,
                 reissue_at: REISSUE_PERIOD,
@@ -411,14 +417,19 @@ fn fly(
         let aim = wolf.as_ref().map(|w| w.1.translation + Vec3::Y * 0.3);
         // FollowType 3 "follow target": it rides on Wolf (his chest, where `fire` aims).
         // gap: EmittePosType 6 "above and behind the target" has no traced offset.
-        let follow = aim.filter(|_| b.spec.follow_type == 3);
+        // The first update (the one after the fire, tools/emu-cases `bullets`) only marks it
+        // launched: no follow, homing, speed or move; its age counts and it touches where fired.
+        let launched = std::mem::replace(&mut b.launched, true);
+        let follow = aim.filter(|_| b.spec.follow_type == 3 && launched);
         if let Some(at) = follow {
             btf.translation = at;
         }
         let from = btf.translation;
-        b.vel = steer(&b.spec, b.vel, b.travelled, from, aim, dt);
-        b.vel = flight(&b.spec, b.vel, b.facing, b.travelled, dt);
-        let mut to = if follow.is_some() { from } else { from + b.vel * dt };
+        if launched {
+            b.vel = steer(&b.spec, b.vel, b.travelled, from, aim, dt);
+            b.vel = flight(&b.spec, b.vel, b.facing, b.travelled, dt);
+        }
+        let mut to = if follow.is_some() || !launched { from } else { from + b.vel * dt };
         // The map stops it (isPenetrateMap: not); without one, the floor it was fired over.
         let mut landed = false;
         let step = to - from;

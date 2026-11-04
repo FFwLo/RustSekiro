@@ -36,6 +36,8 @@ pub struct Projectile {
     aim: Vec3,
     travelled: f32,
     age: f32,
+    /// Its first update ran (the fly state's +0x31, FUN_140b0ded0): that one only sets it.
+    launched: bool,
     /// The throw it belongs to (its children share the hit list).
     chain: u32,
     /// Age of the next intervalCreateBulletId child.
@@ -68,7 +70,14 @@ pub struct ProstheticPlugin;
 
 impl Plugin for ProstheticPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, (spawn_bullets.after(crate::anim::PoseSet), fly_bullets).chain().after(ActorSet::Advance))
+        // The exe's world frame (tools/emu-cases `bullets`, kb/frame-coverage.md "A bullet's hit
+        // timing"): the bullet task (MoveMapStep FUN_140a74560, group 0x47) moves the bullets and
+        // the hit manager's step (group 0x4b) lands their hits, both before the chr frames (0x52)
+        // where a TAE BulletBehavior spawns one. So a bullet spawned after this tick's step is
+        // first flown in the next tick, before `resolve`, and a reaction it starts is `fresh`
+        // (its first step the tick after, as a sword hit's).
+        app.add_systems(FixedUpdate, spawn_bullets.after(crate::anim::PoseSet).after(ActorSet::Advance))
+            .add_systems(FixedUpdate, fly_bullets.after(ActorSet::Decide).after(crate::actor::clear_fresh).before(ActorSet::Resolve))
             .add_systems(Update, draw_bullets.run_if(resource_exists::<GizmoConfigStore>));
     }
 }
@@ -278,6 +287,7 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
             aim: d.normalize_or(Vec3::NEG_Z),
             travelled: 0.0,
             age: 0.0,
+            launched: false,
             chain,
             next_interval: spec.interval_create_wait_time,
             hit: Vec::new(),
@@ -285,6 +295,38 @@ pub(crate) fn spawn_row(commands: &mut Commands, spec: &BulletSpec, pos: Vec3, d
             inherit_sfx,
         });
     }
+}
+
+/// Where along a step `from -> to` a sphere first comes within `reach` of the segment `a - b`
+/// (0 = at `from`, 1 = at `to`). The distance along the line is convex, so its minimum is found
+/// by a ternary search and the first touch before it by bisection.
+pub(crate) fn first_touch(from: Vec3, to: Vec3, a: Vec3, b: Vec3, reach: f32) -> f32 {
+    let d = |s: f32| {
+        let p = from + (to - from) * s;
+        segment_distance(p, p, a, b)
+    };
+    if d(0.0) <= reach {
+        return 0.0;
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..40 {
+        let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if d(m1) <= d(m2) {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let (mut lo, mut hi) = (0.0f32, (lo + hi) * 0.5);
+    for _ in 0..30 {
+        let m = (lo + hi) * 0.5;
+        if d(m) <= reach {
+            hi = m;
+        } else {
+            lo = m;
+        }
+    }
+    hi
 }
 
 /// A bullet that can touch characters: it carries damage, posture or SpEffects (the chains'
@@ -382,12 +424,17 @@ fn fly_bullets(
         }
         b.age += dt;
         // The exe's bullet update, shared with the enemies' (enemy_bullet.rs): homing, then the
-        // in / out of range accel and gravity held within min..maxVellocity.
+        // in / out of range accel and gravity held within min..maxVellocity. The first update
+        // (the tick after the spawn) only marks it launched (FUN_140b0ded0 +0x31): no homing,
+        // speed or move, its age still counts and its hit is tested where it was spawned.
         let from = btf.translation;
-        let facing = b.vel.normalize_or(b.aim);
-        b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
-        b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
-        let mut to = from + b.vel * dt;
+        let mut to = from;
+        if std::mem::replace(&mut b.launched, true) {
+            let facing = b.vel.normalize_or(b.aim);
+            b.vel = crate::enemy_bullet::steer(&b.spec, b.vel, b.travelled, from, aim, dt);
+            b.vel = crate::enemy_bullet::flight(&b.spec, b.vel, facing, b.travelled, dt);
+            to = from + b.vel * dt;
+        }
         // The map stops it unless it passes through (isPenetrateMap); with no map, the floor y 0.
         let mut landed = false;
         let step = to - from;
@@ -417,7 +464,9 @@ fn fly_bullets(
         // A carrier that hits nothing itself but turns into what does (the Fistful of Ash's
         // throw 3511 -> its cloud 3512) bursts on reaching a body. gap: the exe's end condition
         // for such a carrier is not traced; flying its whole second put the cloud past the enemy.
-        if !ended && !hits_characters(&b.spec) && row(b.spec.hit_bullet_id).is_some_and(hits_characters) {
+        // A piercing one (isPenetrate) does not: the shuriken's dummy 700001 (speed 0, life 0.15)
+        // sat on the General for its whole life in the exe (tools/emu-cases `bullets`).
+        if !ended && b.spec.is_penetrate == 0 && !hits_characters(&b.spec) && row(b.spec.hit_bullet_id).is_some_and(hits_characters) {
             ended = enemies.iter().any(|(_, da, dtf, e, _)| {
                 let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
                 da.hp > 0.0 && !e.is_dead() && segment_distance(from, to, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= b.spec.hit_radius.max(0.2) + BODY_RADIUS
@@ -443,14 +492,17 @@ fn fly_bullets(
                 } else {
                     b.spec.hit_radius
                 };
-                // The part group of the capsule it touched (env(1120)).
+                // The part group of the capsule it touched (env(1120)), and where along the step
+                // it first touched.
                 let mut part = 0u8;
+                let mut touch_at = 1.0f32;
                 let hit = match hurt {
                     Some(h) => h.0.iter().enumerate().any(|(i, &(ma, mb, hr))| match (markers.get(ma), markers.get(mb)) {
                         (Ok(pa), Ok(pb)) => {
                             let touch = segment_distance(from, to, pa.translation(), pb.translation()) <= r + hr;
                             if touch {
                                 part = h.1.get(i).copied().unwrap_or(0);
+                                touch_at = first_touch(from, to, pa.translation(), pb.translation(), r + hr);
                             }
                             touch
                         }
@@ -458,7 +510,12 @@ fn fly_bullets(
                     }),
                     None => {
                         let feet = dtf.translation - Vec3::Y * crate::player::CAPSULE_HALF_HEIGHT;
-                        segment_distance(from, to, feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5) <= r + BODY_RADIUS
+                        let (a, c) = (feet + Vec3::Y * 0.3, feet + Vec3::Y * 1.5);
+                        let touch = segment_distance(from, to, a, c) <= r + BODY_RADIUS;
+                        if touch {
+                            touch_at = first_touch(from, to, a, c, r + BODY_RADIUS);
+                        }
+                        touch
                     }
                 };
                 if !hit {
@@ -479,6 +536,12 @@ fn fly_bullets(
                 }
                 if b.spec.is_penetrate == 0 {
                     ended = true;
+                    // It stops where it touched (the exe's hit step puts the shuriken 700000 3.57 m
+                    // out after steps summing 4.0 m); its HitBulletID child starts there.
+                    let stop = from + (to - from) * touch_at;
+                    b.travelled -= (to - stop).length();
+                    to = stop;
+                    btf.translation = to;
                 }
                 let msg = hit_enemy(&combat, &b, from, to, part, &mut da, dtf, &mut e, sounds.as_deref_mut());
                 // sfxId_Flick where it was deflected, sfxId_Hit where it landed or was blocked.
@@ -867,8 +930,8 @@ pub(crate) fn tool_hit_push(combat: &Combat, da: &mut Actor, e: &mut Enemy, from
     let no_motion = !da.anim.is_empty() && dd.flag(&da.anim, da.step(), crate::combat::FLAG_NO_DAMAGE_MOTION);
     if !no_motion {
         apply_knockback(combat, da, from, at, None, knockback, damage_kb(level), "knockbackRate_vsPlayer_DirectHit");
-        // Bullets fly after the step (fly_bullets), so the next step is the reaction's first.
-        da.kb_wait = 1;
+        // Bullets land their hits before the step (fly_bullets runs in the hit step's place), so
+        // the knockback waits as a sword hit's (Actor::knockback's kb_wait 2).
     }
     if dmg > 0.0 {
         e.hurt_by_wolf = true;

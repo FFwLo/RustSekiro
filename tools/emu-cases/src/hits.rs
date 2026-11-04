@@ -24,13 +24,13 @@ use super::acttrace::{self, Input, ATTACK, CHR_FRAME, DT, GUARD, TASKS_POST, TAS
 use super::{proxy, turn, uc, Emu};
 
 /// The hit manager (DAT_143d77ef0) and its per-frame step (rcx manager, xmm1 dt).
-const HIT_MANAGER: u64 = 0x1_43d7_7ef0;
-const HIT_STEP: u64 = 0x1_409a_0dc0;
+pub(super) const HIT_MANAGER: u64 = 0x1_43d7_7ef0;
+pub(super) const HIT_STEP: u64 = 0x1_409a_0dc0;
 /// The defender's resolve (rcx damage module, rdx attacker, r8 hit record), apply, and the hit
 /// stops FUN_140b6e5a0 (same arguments; the record's last read point after the apply).
-const RESOLVE: u64 = 0x1_40b6_c880;
+pub(super) const RESOLVE: u64 = 0x1_40b6_c880;
 const APPLY: u64 = 0x1_40b6_e6a0;
-const AFTER_APPLY: u64 = 0x1_40b6_e5a0;
+pub(super) const AFTER_APPLY: u64 = 0x1_40b6_e5a0;
 /// Hit-stop start SprjChrHitStopModule FUN_140b9dad0 (rcx module, xmm1 seconds).
 const STOP_START: u64 = 0x1_40b9_dad0;
 /// TAE update of the selected clip (rcx anim id, xmm1 / xmm2 the clip time before / after).
@@ -42,7 +42,7 @@ const GENERAL_DEFLECT: u64 = 200220;
 /// AtkParam lookup FUN_1410b5160 (out, id pair: the row at out +0x10), as FUN_140b6e5a0 calls it.
 const ATK_ROW: u64 = 0x1_410b_5160;
 /// Bytes of the hit record kept (it lives on the delivering function's stack).
-const HIT_SIZE: usize = 0x250;
+pub(super) const HIT_SIZE: usize = 0x250;
 
 /// Functions counted per frame (entered via the block hook's `starts`).
 const WATCH: [(u64, &str); 9] = [
@@ -111,7 +111,7 @@ fn i32at(emu: &mut Emu, at: u64) -> i32 {
 fn f32at(emu: &mut Emu, at: u64) -> f32 {
     f32::from_le_bytes(emu.peek(at))
 }
-fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
+pub(super) fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
     let bag = emu.peek_u64(chr + 0x1ff8);
     emu.peek_u64(bag + off)
 }
@@ -120,7 +120,7 @@ fn module(emu: &mut Emu, chr: u64, off: u64) -> u64 {
 /// [bag+0x90] (+0x10 timer, +0x14 length, +0x20 state, +0x34 the last start's time, +0x2e..+0x31
 /// started as defender / as attacker / +0x30 / forced), chr +0x108 the frame's clock,
 /// module0 +0x5c (the reaction the damage side asked for), physics pos / yaw.
-fn chr_state(emu: &mut Emu, chr: u64) -> Value {
+pub(super) fn chr_state(emu: &mut Emu, chr: u64) -> Value {
     let data = module(emu, chr, 0x18);
     let hs = module(emu, chr, 0x90);
     let m0 = module(emu, chr, 0);
@@ -139,7 +139,7 @@ fn chr_state(emu: &mut Emu, chr: u64) -> Value {
 /// +0x54 the AtkParam id pair FUN_1410b5160 looks up, +0x164 guarded, +0x1c7 deflected, +0x1c4
 /// guard break, +0x1c5, +0x1c6 broken, +0x68 knockback, +0x1e0 HP damage, +0x1e4 posture damage,
 /// +0x150 / +0x158 attack direction, +0x160 body part, +0x231 flags.
-fn hit_fields(b: &[u8]) -> Value {
+pub(super) fn hit_fields(b: &[u8]) -> Value {
     let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     let i = |o: usize| i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     json!({
