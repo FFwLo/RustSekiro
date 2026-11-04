@@ -134,6 +134,7 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E31 | emu | | open | Deathblow window: how long an enemy stays broken after a posture break before it recovers. RSekiro uses a stand-in, `config.toml` `broken_time` = 4 s. Find what ends the break in the exe (the break anim's length or TAE, an HKS state timer, or a C++ timer), port it per enemy, and remove `broken_time` | `enemy.rs` `on_posture_break`, `combat.rs`; kb/damage.md; system: Combat rules |
 | E32 | emu | | open | Free camera swing after a sideways run: the CameraParam fulcrum gives 68 deg/s at a run and 143 at a sprint, which circled Wolf in RSekiro, so `config.toml` `follow_swing` halves it. Run the exe's free camera (FUN_140734790) with the stick held sideways, match its swing, and remove `follow_swing` | `camera.rs` `drag_fulcrum`; kb/camera.md; the harness of `follow_camera_matches_the_exe` |
 | E33 | emu | | open | Stealth: map lighting in perception (always "Good" light today), the observer's geometry bits (FUN_140616f50) and Wolf's hiding SpEffects 332 / 334 | system: Stealth; the `gap:` lines in src/stealth.rs |
+| E34 | emu | | open | World streaming: run the exe's WorldBackRead record update (FUN_14081eae0; sets from FUN_14081d460: 0/1 m and 80/90 m, 0.2 s promote, 3 s retire) and the block state machine (FUN_140826520) on the same inputs as RSekiro, then make crates/game map_world.rs keep and free blocks by that rule instead of block adjacency | kb/map.md "How the exe streams the world"; system: Maps / collision |
 
 ## P: port gaps
 
