@@ -200,6 +200,7 @@ def submit(line, part, dry, emu=None, why=None):
     base = f"{r}/main"
     git("fetch", "-q", r, "main")
     emu_line = proof(top, rid, emu, why)
+    emu_line = "\n" + emu_line if emu_line else ""  # its own line under Board, or nothing
     commits =git("log", "--format=- %s", f"{base}..HEAD", cwd=top)
     if not dry:
         git("push", "-q", "-u", "origin", f"HEAD:refs/heads/{branch}", cwd=top)
@@ -218,8 +219,7 @@ def submit(line, part, dry, emu=None, why=None):
 
 ## Board
 
-Board: {rid} {kind}: {line}
-{emu_line}
+Board: {rid} {kind}: {line}{emu_line}
 
 ## How it was checked
 
