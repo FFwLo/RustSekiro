@@ -1093,6 +1093,7 @@ impl Plugin for EnemyPlugin {
                 FixedUpdate,
                 (spawn_encounter, reset_fight, stealth_env_start, start_unaware, ai_hold, route_end_anim, parry_interrupt, world::update_lod, think, grapple::on_wire_hit, ninsatsu_hit, deathblow_flinch, death_noise, todome_message, events::messages, script::run_scripts, world::run_world, talk::run_talk, events::apply_event_warp).chain().in_set(ActorSet::Decide),
             )
+            .add_systems(FixedUpdate, world::apply_state.after(world::run_world).in_set(ActorSet::Decide))
             .add_systems(Update, toggle_aggression.run_if(resource_exists::<ButtonInput<KeyCode>>))
             .init_resource::<grapple::EnemyGrapples>()
             .add_systems(PostUpdate, grapple::update.after(bevy::transform::TransformSystems::Propagate));

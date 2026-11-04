@@ -143,7 +143,10 @@ pub fn install(app: &mut App) {
         // The whole play world's collision (its blocks, helpers kept off the player, placed
         // objects the story has on), for map.rs's Terrain in place of the arena's.
         let t0 = std::time::Instant::now();
-        match sekiro_rs::map::world::collision_world(&cache, &layouts, &stories) {
+        // The collision parts and objects the blocks' events switch (enemy/world.rs) are event
+        // parts of it, switched as the events run.
+        let switch = crate::enemy::world::switchable(&layouts.keys().cloned().collect::<Vec<_>>());
+        match sekiro_rs::map::world::collision_world_switched(&cache, &layouts, &stories, &switch) {
             Ok(w) => {
                 info!("sekiro-rs map {id}: play-world collision, {} triangles over {:?}, in {:.1} s", w.triangle_count(), layouts.keys().collect::<Vec<_>>(), t0.elapsed().as_secs_f32());
                 let _ = WORLD.set(Arc::new(w));

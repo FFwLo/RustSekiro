@@ -48,15 +48,14 @@ DummyObject) the events name, so radius checks on objects work (m11_01: 200 -> 2
 Re-run it after pulling (`python tools/world_scripts.py`).
 
 Gaps (m11_01 uses, not run):
-- gap: the objects' state is kept but the play world (sr_map) neither draws, animates nor collides
-  by it; map parts and hits are not switched in the map either.
-- gap: Wolf has no ObjAct action, so nothing calls Run::use_objact in the game: doors that wait on
-  5[2] stay shut (20005615's 1113709 / 1113710).
-- gap: how long an executed ObjAct record stays in the exe's list is not traced (one frame here).
+- (closed by P10b) the play world drawing and colliding by the objects, map parts and hits;
+  Wolf's ObjAct action.
+- gap: how long an executed ObjAct record stays in the exe's list is not traced (one frame here;
+  P10b's re-scout found no removal, so it may stay).
 - gap: 4[3]'s type number for Wolf (the class behind PlayerIns+0x2118, its slot 0x68) is not traced.
 - gap: the writer of 1003[13]'s own-world byte is not traced.
-- gap: in world mode warps (2004[3] / [40-42] / [61]), cutscenes (2002[4] / [13]) and bullets are
-  requested but world.rs does not apply them.
+- gap: in world mode cutscenes (2002[4] / [13]), bullets and Wolf's own warps are requested but
+  world.rs does not apply them (other characters' warps: P10b).
 - gap: common.emevd's own events (the global ones: 50, 100, ...) are not part of a map's script.
 - gap: 3[24] IF Action Button: 9
 - gap: 4[06] IF NPC Part HP: 12
@@ -115,3 +114,103 @@ Gaps (m11_01 uses, not run):
 Stand-ins the VM already ran before (counted as run): 3[31] a cutscene is finished at once, 4[15]
 in the draw group, 4[7] / 5[10] backread always ready, 11[2] any ground counts, 3[23] / 4[1] any
 HP loss counts as the damage.
+
+## P10b: the event state in play, all six play blocks (2026-11-04)
+
+The play world (sr_map: m11_00, m11_01, m11_02, m13, m17, m20) now follows the events' state
+(src/enemy/world.rs `apply_state`, after run_world each fixed step):
+- Drawn: map parts 2012[1] off are hidden; objects destroyed (2005[1]), deactivated (2005[3]
+  off) or open are hidden. Through sekiro-rs's new `map::visibility::EventVisibility` (entity id
+  or entity group per block, `sr_map::map_of`), which write_visibility reads after the taken
+  items and before the arena's, Job C's and the story's opinion; parts the events never named
+  keep the story's state.
+- Collided: `sr_map::install` gives the collision world the switchable set
+  (world.rs `switchable`: 2011[1] / [4] targets, objects named by 2005[1] / [2] / [3] / [7] and
+  every ObjAct's object, over the six scripts: 82 collision ids, 233 object ids, 670 parts and
+  objects with 149949 triangles once entity groups are expanded). `map_world::
+  collision_world_switched` takes them out of the static mesh and adds them as event parts
+  (`CollisionWorld::append_event_part`, crates/sim unchanged), on as the story starts them;
+  `set_event_part` follows 2011[1] / [4] and the objects' shown state. Collision parts that are
+  swim hits or event walls are not switchable (kept as before).
+- Open is **hidden + collision off**: the cache's object GLBs carry no animation (1039 checked,
+  0 with one; the objbnd anibnds are not converted), so a door is not posed. An object is open
+  when its last 2005[7] Reproduce Object Animation is one of its ObjActs' objAnimId (the HUB
+  door 1111700: 999940 anim 1 / 999941 anim 2; the gate 1111603: 999900 anim 1), or when Wolf
+  works one of its ObjActs (the ObjAct plays objAnimId on the object). Other 2005[7] anims are
+  kept but change nothing.
+
+Wolf's ObjAct action (world.rs `objact_interact`, last of idol.rs world_hooks' interactions):
+the action button is Interact (E, Action::Interact; the same press that kneels at an idol). On
+the ground and free, the nearest ObjAct on offer whose reach holds is worked: Run::use_objact
+with its ObjActEntityID (what 5[2] names: 20005615 waits on 1113709 / 1113710, the HUB door's
+two ObjActs) and the object's open animation; it holds Wolf for that step. Data:
+tools/world_scripts.py `objacts` exports each map's MSB ObjAct events (type 7: ObjActEntityID,
+part, ObjActParam row, EventFlagID) with the row's validDist / validPlayerAngle /
+validObjAngle / objAnimId and the object FLVER's dummy objDummyId in MSB space (the HUB door's
+121 / 120 sit 0.6 m out on either side, facing into the door). Counts: m11_00 7, m11_01 24,
+m11_02 5, m13 1, m17 1, m20 11. Offered: object not destroyed or deactivated, its row not
+switched off for it by 2005[6], reach above 0. Reach (re-scout, FUN_1406b0c10): distance from the
+dummy at most validDist x 0.01 x 2 m (1.4 m for 70), Wolf facing along the dummy's forward within
+validPlayerAngle, standing behind it within validObjAngle, 1.5 m up or down. The exe's record key
+is the ObjAct instance's "KickEventID" (+0xc), pushed once per execution (FUN_1406b2af0, from the
+execute handler FUN_1406bc1b0 at once or after the animation by eventKickTiming); the data says
+it is the ObjActEntityID.
+
+Warps (2004[3] Character Warp Request, and 2004[40-42] / [61], all Act::Warp): a character's
+warp whose target is in a play block's script (world.rs `warp_target`: a character where it
+stands for type 2, else the place or character of any block, the requester's first) is carried
+out: on the field it is moved there (a place: its floor point + the capsule half height),
+otherwise it comes in there (its spot moves with it). m11_01's nine 2004[3] all send 1110701 to
+points 11127xx. Wolf's own warps are not carried out (20005601 / 20005605's idol and fall
+returns, 11105880's cutscene spots: their conditions are approximated), logged with
+SHINOBI_SCRIPT_TRACE.
+
+All six blocks' events run from the start (world.rs `load` already ran every play block that has
+a script; P10b checks them). Per map (test
+`the_play_worlds_six_blocks_run_with_their_listed_gap_counts`):
+
+| map | events | instructions | not run | kinds not run |
+|---|---|---|---|---|
+| m11_00 Outskirts | 393 | 10064 | 901 | 72 |
+| m11_01 Castle | 479 | 14955 | 1167 | 53 |
+| m11_02 Castle (reservoir) | 234 | 6087 | 717 | 65 |
+| m13 Abandoned Dungeon | 100 | 3227 | 164 | 29 |
+| m17 Sunken Valley | 324 | 9525 | 849 | 50 |
+| m20 Senpou Temple | 388 | 10142 | 810 | 65 |
+
+Kinds not run that m11_01's list above does not have:
+- m11_00: 3[4], 4[34-36], 4[44], 5[0], 5[3], 1000[6], 2000[3], 2002[3], 2003[3], 2003[75],
+  2003[83], 2003[90], 2003[93], 2004[14], 2004[24], 2004[43], 2004[47], 2004[63], 2004[67],
+  2007[10], 2007[11], 2007[16], 2010[2], 2011[5], 2012[8].
+- m11_02: 3[4], 3[26], 3[34], 4[36], 1000[0], 1003[8], 2002[3], 2003[83], 2004[43], 2004[55],
+  2007[10], 2007[11], 2007[16], 2011[2], 2011[3], 2011[5], 2012[8].
+- m13: 3[4], 12[4], 2004[24].
+- m17: 3[4], 4[34], 1000[6], 2003[64], 2003[65], 2003[75], 2004[23], 2004[24], 2004[43],
+  2007[2], 2010[2], 2011[5].
+- m20: 3[4], 5[12], 1000[0], 1000[6], 1003[14], 2002[3], 2002[7], 2003[3], 2003[6], 2003[54],
+  2003[75], 2003[83], 2004[18], 2004[23], 2004[24], 2004[27], 2004[63], 2007[2], 2008[2],
+  2010[2].
+(Some of m11_01's kinds are absent elsewhere; the test prints each map's full set.)
+
+Tests: src/enemy/world.rs `wolf_opens_the_castle_hub_door_with_the_action_button`,
+`opened_gates_broken_objects_and_switched_parts_reach_the_play_world`,
+`a_warp_request_finds_its_target_in_the_play_world`,
+`the_play_worlds_six_blocks_run_with_their_listed_gap_counts`,
+`the_play_world_collision_takes_the_events_switchable_parts`; crates/game map_world.rs
+`a_switched_door_blocks_until_the_events_open_it`.
+
+Unverified (P10b):
+- Not seen in the game window: no run of the play world was made; the state is checked by the
+  VM tests and the collision ray test only.
+- Which ObjAct angle is which (player facing vs side) is read from the HUB door's dummies, not
+  traced; the 1.5 m height window and the dummy's parent bone (taken as the root) are assumed.
+- 5[2]'s key being the ObjActEntityID rests on the data (20005615); the re-scout read the exe's
+  key as the instance's KickEventID without finding where it is filled.
+- The executed record lasting one frame (the exe seems to keep it); the EventFlagID is not set
+  on execution (none found); whether a set EventFlagID stops the offer (not found).
+- ObjActs on by default before 2005[6] (the 2005[6] handler is not traced).
+- Hiding an open door instead of posing it; a deactivated object being hidden as well as
+  non-colliding (as the story treats DeactivateObject).
+- Wolf's playerAnimId (the door push) is not played; the exe's eventKickTiming wait is not
+  modelled.
+- Reach-0 ObjActs (the revolving walls 90071-90076: spQualified path) are never offered.

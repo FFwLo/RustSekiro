@@ -172,6 +172,37 @@ pub struct ScriptDef {
     /// points o259920-922).
     #[serde(default)]
     pub objects: HashMap<i64, ObjDef>,
+    /// The map's ObjActs (MSB ObjAct events, tools/world_scripts.py `objacts`): the doors,
+    /// gates and levers Wolf works with the action button (world.rs `objact_interact`).
+    #[serde(default)]
+    pub objacts: Vec<ObjActDef>,
+}
+
+/// One MSB ObjAct event with its ObjActParam reach.
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct ObjActDef {
+    /// ObjActEntityID: what 5[02] IF ObjAct Event Flag names (m11_01 20005615 waits on 1113709 /
+    /// 1113710, the HUB door's two ObjActs).
+    pub id: i64,
+    /// The object part it works.
+    pub object: i64,
+    /// Its ObjActParam row (2005[6] Set ObjAct State switches it per object).
+    pub param: i64,
+    /// The MSB EventFlagID (kept, not set: the exe sets no event flag of it on execution that
+    /// the re-scout found).
+    #[allow(dead_code)]
+    pub flag: i64,
+    /// Reach (m): validDist / 50 (the exe's offer test, FUN_1406b0c10).
+    pub dist: f32,
+    /// validPlayerAngle / validObjAngle (degrees).
+    pub player_angle: f32,
+    pub obj_angle: f32,
+    /// objAnimId: the object's animation the ObjAct plays (the door's open pose).
+    pub anim: i64,
+    /// The object dummy poly objDummyId in MSB space (the object's origin when its FLVER has
+    /// none), and its forward.
+    pub at: [f32; 3],
+    pub forward: [f32; 3],
 }
 
 impl Run {
@@ -572,9 +603,8 @@ impl Run {
         self.def.chars.get(&id).and_then(|c| c.gate).is_some_and(|(f, on)| self.flag(f) == on)
     }
 
-    /// A map object as the events left it (None: never named, as placed). The object accessors
-    /// are for the play world's objects (not wired yet: the tests read them).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A map object as the events left it (None: never named, as placed); the play world reads
+    /// the objects through world.rs `view` / `offers`.
     pub fn object(&self, id: i64) -> Option<&ObjState> {
         self.objects.get(&id)
     }
@@ -591,9 +621,9 @@ impl Run {
         self.hits.get(&id).copied().unwrap_or(true)
     }
 
-    /// Wolf executed the ObjAct with this EventFlagID (a door's open action): 5[02] holds this
-    /// frame. gap: nothing in the game calls it yet (Wolf has no ObjAct action).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Wolf worked the ObjAct with this ObjActEntityID (a door's open action, world.rs
+    /// `objact_interact` / `work_objact`): 5[02] holds this frame (gap: the exe's record seems
+    /// to stay in its list; its removal is not traced).
     pub fn use_objact(&mut self, flag: i64) {
         self.objact_used.insert(flag);
     }
@@ -1076,8 +1106,7 @@ pub(super) fn step(run: &mut Run, ev: usize, w: &World, dt: f32, acts: &mut Vec<
                 run.objects.entry(i(0)).or_default().active = i(1) == 1;
             }
             // The map objects (doors, gates, chests, breakables): their state as the events set
-            // it (Run::object). gap: the play world (sr_map) does not draw, animate or collide
-            // by it yet.
+            // it (Run::object), which the play world draws and collides by (world.rs `view`).
             // 2005[1] Request Object Destruction (object, slot; 0: a parameter left unset).
             (2005, 1) if i(0) != 0 => run.objects.entry(i(0)).or_default().destroyed = true,
             (2005, 2) => run.objects.entry(i(0)).or_default().destroyed = false,

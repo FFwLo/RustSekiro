@@ -627,6 +627,77 @@ pub fn collision_world(
     layouts: &BTreeMap<String, Value>,
     story: &super::story::MapStory,
 ) -> Result<sekiro_sim::collision::CollisionWorld> {
+    collision_world_switched(cache, layouts, story, &Switchable::default())
+}
+
+/// The collision the map events switch at run time (`src/enemy/world.rs` runs the blocks'
+/// events): collision parts their 2011[1] / [4] name and placed objects they break,
+/// (de)activate or open (2005[1] / [2] / [3] / [7], the MSB's ObjActs), by MSB entity id or an
+/// entity group the part is in. [`collision_world_switched`] adds these as event parts
+/// (`CollisionWorld::append_event_part`) keyed by that id, on as the story starts them, for
+/// `CollisionWorld::set_event_part` to switch.
+#[derive(Clone, Debug, Default)]
+pub struct Switchable {
+    pub collisions: BTreeSet<i32>,
+    pub objects: BTreeSet<i32>,
+}
+
+/// The id a layout row is switched by: its entity id, else the first of its entity groups in
+/// `ids`.
+fn switch_key(row: &Value, ids: &BTreeSet<i32>) -> Option<i32> {
+    let own = row["entity_id"].as_i64().unwrap_or(-1) as i32;
+    if own > 0 && ids.contains(&own) {
+        return Some(own);
+    }
+    groups8(&row["entity_group_ids"])
+        .into_iter()
+        .map(|g| g as i32)
+        .find(|g| *g > 0 && ids.contains(g))
+}
+
+/// Appends triangles `first..first + count` of `source` to `out` (three vertices each),
+/// skipping collapsed ones.
+fn sub_mesh(source: &CollisionMesh, first: usize, count: usize, out: &mut CollisionMesh) {
+    let end = (first + count).min(source.indices.len() / 3);
+    for t in first.min(end)..end {
+        let tri = &source.indices[t * 3..t * 3 + 3];
+        if tri[0] == tri[1] && tri[1] == tri[2] {
+            continue;
+        }
+        let Some(corners) = tri
+            .iter()
+            .map(|&i| source.vertices.get(i as usize).copied())
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let base = out.vertices.len() as u32;
+        out.vertices.extend(corners);
+        out.indices.extend([base, base + 1, base + 2]);
+        out.materials
+            .push(source.materials.get(t).copied().unwrap_or(u32::MAX));
+    }
+}
+
+/// Whether a collision part with this hit filter can be an event part: one bodies or the
+/// camera collide with, not a swim hit or an event wall (those keep their own handling).
+fn switchable_filter(filter: u8) -> bool {
+    use sekiro_sim::hit_filter as hf;
+    filter != hf::SWIM_FILTER
+        && !hf::is_event_wall(filter)
+        && hf::mask(filter) & (hf::PLAYER | hf::ENEMY | hf::CAMERA) != 0
+}
+
+/// [`collision_world`] with the map events' [`Switchable`] collision as event parts. gap: the
+/// fall-prevention walls of a switched part or object stay as the story left them.
+pub fn collision_world_switched(
+    cache: &Path,
+    layouts: &BTreeMap<String, Value>,
+    story: &super::story::MapStory,
+    switch: &Switchable,
+) -> Result<sekiro_sim::collision::CollisionWorld> {
+    // (switch id, mesh, who collides with it, on at the start)
+    let mut events: Vec<(i32, CollisionMesh, u8, bool)> = Vec::new();
     let mut mesh = CollisionMesh::default();
     let mut helpers = sekiro_sim::hit_filter::HelperCollision::default();
     let mut story_off = 0;
@@ -635,10 +706,44 @@ pub fn collision_world(
         // A block exports `collision_lo.bin` beside `collision.bin`, never alone.
         if dir.join(sekiro_sim::lo_collision::HIGH_FILE).is_file() {
             let story = story.maps.get(block);
+            // The parts the events switch leave the static mesh and come back as event parts.
+            let switched: BTreeMap<&str, (i32, u8)> = layout["collisions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|row| {
+                    let key = switch_key(row, &switch.collisions)?;
+                    let filter = sekiro_sim::hit_filter::row_filter(row)?;
+                    let name = row["name"].as_str()?;
+                    switchable_filter(filter)
+                        .then(|| (name, (key, sekiro_sim::hit_filter::mask(filter))))
+                })
+                .collect();
             let part = sekiro_sim::lo_collision::block_collision(&dir, layout, |n| {
-                story.is_some_and(|s| s.switched_off(n))
+                story.is_some_and(|s| s.switched_off(n)) || switched.contains_key(n)
             })
             .map_err(anyhow::Error::msg)?;
+            if !switched.is_empty() {
+                let lo =
+                    sekiro_sim::lo_collision::read(&dir, layout).map_err(anyhow::Error::msg)?;
+                for row in lo.rows["collisions"].as_array().into_iter().flatten() {
+                    let Some(name) = row["name"].as_str() else {
+                        continue;
+                    };
+                    let Some(&(key, who)) = switched.get(name) else {
+                        continue;
+                    };
+                    let (Some(first), Some(count)) =
+                        (row["triangles"][0].as_u64(), row["triangles"][1].as_u64())
+                    else {
+                        continue;
+                    };
+                    let mut part_mesh = CollisionMesh::default();
+                    sub_mesh(&lo.mesh, first as usize, count as usize, &mut part_mesh);
+                    let on = !story.is_some_and(|s| s.switched_off(name));
+                    events.push((key, part_mesh, who, on));
+                }
+            }
             story_off += part.story_off;
             helpers.extend(part.helpers);
             mesh.extend(&part.mesh);
@@ -680,6 +785,14 @@ pub fn collision_world(
             });
         let riders = ride_walls(&layouts[block], &groups);
         let mut switched_off = 0;
+        // The objects the events switch, by name: their switch id.
+        let object_keys: BTreeMap<&str, i32> = layouts[block]["objects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| Some((row["name"].as_str()?, switch_key(row, &switch.objects)?)))
+            .collect();
+        let mut object_events: Vec<(String, i32, u8, bool)> = Vec::new();
         let (parts, triangles) = world
             .add_block_objects(&cache.join("maps").join(block), block, |part, who| {
                 if riders.contains(part.name.as_str()) {
@@ -688,16 +801,53 @@ pub fn collision_world(
                 let on = story
                     .and_then(|s| s.part(&part.name))
                     .is_none_or(|p| p.enabled);
+                if let Some(&key) = object_keys.get(part.name.as_str()) {
+                    object_events.push((part.name.clone(), key, who, on));
+                    return 0;
+                }
                 switched_off += usize::from(!on);
                 if on { who } else { 0 }
             })
             .map_err(anyhow::Error::msg)?;
+        if !object_events.is_empty() {
+            let path = cache.join("maps").join(block).join("object_collision.bin");
+            let bytes = std::fs::read(&path).with_context(|| path.display().to_string())?;
+            let objects = sekiro_formats::hknp::ObjectCollision::from_bytes(&bytes)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            for (name, key, who, on) in object_events {
+                let Some(p) = objects.parts.iter().find(|p| p.name == name) else {
+                    continue;
+                };
+                let mut part_mesh = CollisionMesh::default();
+                sub_mesh(
+                    &objects.mesh,
+                    p.first as usize,
+                    p.count as usize,
+                    &mut part_mesh,
+                );
+                events.push((key, part_mesh, who, on));
+            }
+        }
         if parts > 0 {
             eprintln!(
                 "collision: {block}: {parts} placed objects with collision, {triangles} \
                  triangles ({switched_off} switched off by the story)"
             );
         }
+    }
+    let event_parts = events.len();
+    let mut event_triangles = 0;
+    for (key, part_mesh, who, on) in events {
+        event_triangles += part_mesh.triangle_count();
+        if part_mesh.triangle_count() > 0 {
+            world.append_event_part(key, &part_mesh, who, on);
+        }
+    }
+    if event_parts > 0 {
+        eprintln!(
+            "collision: {event_parts} collision parts and objects switched by the map events, \
+             {event_triangles} triangles"
+        );
     }
     Ok(world)
 }
@@ -1484,9 +1634,7 @@ fn spawn_blocks(
                 slots,
                 stream,
                 shown: initial,
-                spawned: std::array::from_fn(|level| {
-                    level == initial
-                }),
+                spawned: std::array::from_fn(|level| level == initial),
                 fading: false,
                 applied: None,
             });
@@ -2746,6 +2894,59 @@ mod tests {
         );
     }
 
+    /// The castle's HUB door o111410_8000 (entity 1111700), switched by the map events
+    /// ([`Switchable`]), is an event part of the collision world: it blocks a ray through it
+    /// while on, and the ray passes once `set_event_part` turns it off (the door opened).
+    #[test]
+    fn a_switched_door_blocks_until_the_events_open_it() {
+        let cache = sekiro_sim::cache::root();
+        let castle = ASHINA[1];
+        if !cache
+            .join("maps")
+            .join(castle)
+            .join("object_collision.bin")
+            .is_file()
+        {
+            return;
+        }
+        let blocks = BTreeMap::from([(
+            castle.to_string(),
+            read_layout(&cache.join("maps").join(castle)).unwrap(),
+        )]);
+        let stories = super::super::story::load_blocks(&cache, &blocks).unwrap();
+        let door = blocks[castle]["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["entity_id"] == 1111700)
+            .unwrap();
+        let f = |v: &Value, i: usize| v[i].as_f64().unwrap() as f32;
+        let (t, r) = (&door["translation"], &door["rotation"]);
+        let at = Vec3::new(f(t, 0), f(t, 1), f(t, 2));
+        let normal = Quat::from_xyzw(f(r, 0), f(r, 1), f(r, 2), f(r, 3)) * Vec3::Z;
+        // Through one leaf (the two leaves meet at the door's middle).
+        let side = Vec3::new(normal.z, 0.0, -normal.x);
+        let origin = at + Vec3::Y * 1.2 + side * 0.8 + normal * 1.0;
+        let switch = Switchable {
+            objects: BTreeSet::from([1111700]),
+            ..Default::default()
+        };
+        let world = collision_world_switched(&cache, &blocks, &stories, &switch).unwrap();
+        let hit = world.raycast(origin, -normal, 2.0);
+        assert!(
+            hit.is_some_and(|d| d < 1.4),
+            "the shut door blocks: {hit:?}"
+        );
+        world.set_event_part(1111700, false);
+        let hit = world.raycast(origin, -normal, 2.0);
+        assert!(
+            hit.is_none_or(|d| d > 1.4),
+            "the open door lets it through: {hit:?}"
+        );
+        world.set_event_part(1111700, true);
+        assert!(world.raycast(origin, -normal, 2.0).is_some_and(|d| d < 1.4));
+    }
+
     /// #85: the first-visit story switches off h003401 and h003501, the other state of the
     /// courtyard before the Outskirts samurai general (`c1020_0000`), whose floors stand up to
     /// 6 m above the ground there. Left in, Wolf ran into them and stood on them in mid-air.
@@ -2784,5 +2985,4 @@ mod tests {
             );
         }
     }
-
 }

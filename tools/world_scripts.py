@@ -15,10 +15,14 @@ Output, keyed by map: {"map", "boss": 0, "world": true,
            event dummies),
   "places": {entity: {"at", "yaw"}} (regions, points and the object parts the events name),
   "regions": {entity: {"shape", "size", "parts"}},
-  "events": [{"id", "slot", "rest", "ins"}], "flags_on": []}
+  "events": [{"id", "slot", "rest", "ins"}], "flags_on": [],
+  "objacts": [{"id", "object", "param", "flag", "dist", "player_angle", "obj_angle", "anim",
+               "dummy", "at", "forward"}] (the MSB's ObjAct events, `objacts`; their objects are
+           in "places")}
 Usage: python tools/world_scripts.py
 """
 import json
+import math
 import os
 import struct
 import sys
@@ -100,7 +104,97 @@ def object_places(path):
     return out
 
 
+def tables_of(d):
+    tables, o = {}, 0x10
+    while True:
+        _, cnt, name_off = struct.unpack_from('<iiq', d, o)
+        offs = struct.unpack_from('<%dq' % (cnt - 1), d, o + 16)
+        nxt = struct.unpack_from('<q', d, o + 16 + 8 * (cnt - 1))[0]
+        tables[be.u16s(d, name_off)] = offs
+        if nxt == 0:
+            break
+        o = nxt
+    return tables
+
+
+def rotate(rot, v):
+    """MSB part rotation (degrees, X then Z then Y on a column vector: tools/sekiro-extract msb.rs
+    `rotate`)."""
+    sx, cx = math.sin(math.radians(rot[0])), math.cos(math.radians(rot[0]))
+    sy, cy = math.sin(math.radians(rot[1])), math.cos(math.radians(rot[1]))
+    sz, cz = math.sin(math.radians(rot[2])), math.cos(math.radians(rot[2]))
+    v = (v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx)
+    v = (v[0] * cz - v[1] * sz, v[0] * sz + v[1] * cz, v[2])
+    return (v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy)
+
+
+def flver_dummy(model, ref):
+    """(position, forward) of the dummy poly `ref` of an object's FLVER
+    (extracted/obj/<model>.objbnd.d/<model>.flver; FLVER2 dummies right after the 0x80-byte
+    header, 0x40 bytes each: position, colour, forward, reference id), in the model's space
+    (relative to its parent bone, taken as the root). None without the file or the dummy."""
+    path = os.path.join(bs.ROOT, 'obj', model + '.objbnd.d', model + '.flver')
+    if not os.path.exists(path):
+        return None
+    d = open(path, 'rb').read()
+    if d[:6] != b'FLVER\0':
+        return None
+    count = struct.unpack_from('<I', d, 0x14)[0]
+    for i in range(count):
+        o = 0x80 + i * 0x40
+        pos = struct.unpack_from('<3f', d, o)
+        fwd = struct.unpack_from('<3f', d, o + 0x10)
+        if struct.unpack_from('<h', d, o + 0x1C)[0] == ref:
+            return pos, fwd
+    return None
+
+
+def objacts(path, rows):
+    """The MSB's ObjAct events (MSBS Event type 7; base @0x18, type data @0x20: ObjActEntityID,
+    ObjActPartIndex, ObjActID (ObjActParam row), StateType, EventFlagID; SoulsFormats MSBS
+    EventParam.ObjAct) with their object part's entity id and the ObjActParam row's reach:
+    validDist (the exe's offer test FUN_1406b0c10 compares the distance with the u16 x 0.01
+    x 2, so metres = validDist / 50), validPlayerAngle / validObjAngle (degrees), objAnimId, and
+    the object dummy poly objDummyId's place in MSB space (the object's origin without it)."""
+    d = open(path, 'rb').read()
+    tables = tables_of(d)
+    parts = tables['PARTS_PARAM_ST']
+    models = [be.u16s(d, o + struct.unpack_from('<q', d, o)[0]) for o in tables['MODEL_PARAM_ST']]
+    out = []
+    for o in tables['EVENT_PARAM_ST']:
+        if struct.unpack_from('<I', d, o + 0xC)[0] != 7:
+            continue
+        td = struct.unpack_from('<q', d, o + 0x20)[0]
+        if td == 0:
+            continue
+        ent, pi, param, _state, _, _, flag = struct.unpack_from('<iiiBBhi', d, o + td)
+        if ent <= 0 or not 0 <= pi < len(parts) or param not in rows:
+            continue
+        p = parts[pi]
+        obj = struct.unpack_from('<i', d, p + struct.unpack_from('<q', d, p + 0x60)[0])[0]
+        mi = struct.unpack_from('<i', d, p + 0x10)[0]
+        pos = struct.unpack_from('<3f', d, p + 0x20)
+        rot = struct.unpack_from('<3f', d, p + 0x2C)
+        row = rows[param]
+        dummy = flver_dummy(models[mi], row['objDummyId']) if 0 <= mi < len(models) else None
+        at, fwd = pos, rotate(rot, (0.0, 0.0, 1.0))
+        if dummy:
+            local, f = dummy
+            r = rotate(rot, local)
+            at = (pos[0] + r[0], pos[1] + r[1], pos[2] + r[2])
+            fwd = rotate(rot, f)
+        out.append({
+            'id': ent, 'object': obj, 'param': param, 'flag': flag,
+            'dist': round(row['validDist'] / 50.0, 3),
+            'player_angle': row['validPlayerAngle'], 'obj_angle': row['validObjAngle'],
+            'anim': row['objAnimId'], 'dummy': dummy is not None,
+            'at': [round(v, 3) for v in at], 'forward': [round(v, 4) for v in fwd],
+        })
+    return out
+
+
 def main():
+    rows = {r['id']: r for r in json.load(open(os.path.join(bs.ROOT, 'json', 'params', 'ObjActParam.json'), encoding='utf-8'))['rows']}
     types = bs.emedf()
     common = bs.emevd(os.path.join(bs.ROOT, 'event', 'common_func.emevd'))
     out = {}
@@ -128,7 +222,9 @@ def main():
             chars[eid] = {'chr': model, 'npc': npc, 'think': think, 'at': [round(x, 3), round(y, 3), round(z, 3)], 'yaw': round(yaw, 2)}
             if flag > 0:
                 chars[eid]['gate'] = [flag, state == 1]
+        acts = objacts(msb, rows)
         named = set().union(*(bs.names(ev) for ev in evs)) if evs else set()
+        named |= {a['object'] for a in acts}
         pl, rg = {}, {}
         for eid in sorted(named):
             if eid in places and eid not in chars:
@@ -139,8 +235,8 @@ def main():
                 rg[eid] = {'shape': st, 'size': size}
                 if kids:
                     rg[eid]['parts'] = [{'shape': kst, 'size': ksize, 'at': [round(v, 3) for v in kpos], 'yaw': round(kyaw, 2)} for kst, ksize, kpos, kyaw in kids]
-        out[mp] = {'map': mp, 'boss': 0, 'world': True, 'chars': chars, 'places': pl, 'regions': rg, 'events': evs, 'flags_on': []}
-        print(f'{mp}: {len(chars)} enemies, {len(evs)} events, {len(pl)} places, {len(rg)} regions')
+        out[mp] = {'map': mp, 'boss': 0, 'world': True, 'chars': chars, 'places': pl, 'regions': rg, 'events': evs, 'flags_on': [], 'objacts': acts}
+        print(f'{mp}: {len(chars)} enemies, {len(evs)} events, {len(pl)} places, {len(rg)} regions, {len(acts)} ObjActs')
     path = os.path.join(bs.ROOT, 'enemies', 'world_scripts.json')
     with open(path, 'w', encoding='utf-8', newline='\n') as fh:
         json.dump(out, fh, indent=None, separators=(',', ':'), sort_keys=True)

@@ -226,6 +226,15 @@ pub struct TakenVisibility {
     pub maps: BTreeMap<String, EventState>,
 }
 
+/// The map events' live state (RSekiro's `src/enemy/world.rs` runs the blocks' EMEVD): map
+/// parts (2012[1] Activate Map Part) and objects (destroyed, deactivated or opened) by entity id
+/// or entity group. It comes before the arena's, Job C's and the story's opinion, after the
+/// taken items'; a part it does not name is theirs.
+#[derive(Resource, Default)]
+pub struct EventVisibility {
+    pub maps: BTreeMap<String, EventState>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MaskContribution {
     pub source_map: String,
@@ -456,6 +465,7 @@ impl Plugin for MapVisibilityPlugin {
         app.init_resource::<AuthoredVisibility>()
             .init_resource::<ArenaVisibility>()
             .init_resource::<TakenVisibility>()
+            .init_resource::<EventVisibility>()
             .init_resource::<VisibilityBlocks>()
             .configure_sets(
                 PostUpdate,
@@ -485,6 +495,7 @@ fn visibility_changed() -> impl SystemCondition<()> {
             .or_eager(resource_changed::<AuthoredVisibility>)
             .or_eager(resource_changed::<ArenaVisibility>)
             .or_eager(resource_changed::<TakenVisibility>)
+            .or_eager(resource_changed_or_removed::<EventVisibility>)
             .or_eager(resource_changed_or_removed::<super::story::MapStory>)
             .or_eager(
                 |parts: Query<(&VisibilityPart, &Visibility), VisibilityChanges>| !parts.is_empty(),
@@ -497,7 +508,10 @@ fn write_visibility(
     blocks: Res<VisibilityBlocks>,
     authored: Res<AuthoredVisibility>,
     (taken, arena): (Res<TakenVisibility>, Res<ArenaVisibility>),
-    story: Option<Res<super::story::MapStory>>,
+    (story, events): (
+        Option<Res<super::story::MapStory>>,
+        Option<Res<EventVisibility>>,
+    ),
     mut last_debug: Local<BTreeMap<Entity, Value>>,
     mut parts: Query<(
         Entity,
@@ -522,6 +536,7 @@ fn write_visibility(
             .maps
             .get(&part.map)
             .and_then(|s| s.enabled(part))
+            .or_else(|| events.as_ref()?.maps.get(&part.map)?.enabled(part))
             .or_else(|| arena.maps.get(&part.map).and_then(|s| s.enabled(part)))
             .or_else(|| authored.maps.get(&part.map).and_then(|s| s.enabled(part)))
             .or_else(|| {

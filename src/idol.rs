@@ -1239,12 +1239,13 @@ fn spawn_idols(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mat
 const IDOL_FACING: f32 = std::f32::consts::PI;
 
 /// This game's world hooks for the core (encounter.rs): items on the ground (pickups.rs), the
-/// Sculptor (sculptor.rs) then the idols, the idols as checkpoints.
+/// Sculptor (sculptor.rs), the idols, then the map ObjActs (enemy/world.rs), the idols as
+/// checkpoints.
 pub fn world_hooks() -> crate::encounter::WorldHooks {
     #[cfg(feature = "host")]
-    let interactions: &'static [crate::encounter::Interaction] = &[crate::sculptor::tick, tick];
+    let interactions: &'static [crate::encounter::Interaction] = &[crate::sculptor::tick, tick, crate::enemy::world::objact_interact];
     #[cfg(not(feature = "host"))]
-    let interactions: &'static [crate::encounter::Interaction] = &[tick];
+    let interactions: &'static [crate::encounter::Interaction] = &[tick, crate::enemy::world::objact_interact];
     crate::encounter::WorldHooks { take_item: crate::pickups::take_item, interactions, respawn_at }
 }
 
