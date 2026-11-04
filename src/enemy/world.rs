@@ -80,6 +80,13 @@ struct WorldRun {
     moved: HashMap<i64, (Vec3, f32)>,
 }
 
+impl WorldScripts {
+    /// The event flags on over every block's script (save.rs).
+    pub fn flags_on(&self) -> Vec<i64> {
+        self.runs.iter().flat_map(|r| r.run.flags_on()).collect()
+    }
+}
+
 pub fn active() -> bool {
     std::env::var("SHINOBI_WORLD_ENEMIES").is_ok_and(|v| v == "1") && (crate::encounter::hooks().open_world)() && (crate::encounter::hooks().idol_start)().is_some()
 }
@@ -106,7 +113,13 @@ fn load(blocks: &[String]) -> Vec<WorldRun> {
         let Some(def) = all.get(map) else { continue };
         let unrun = def.events.iter().flat_map(|e| &e.ins).filter(|x| !script::handled(x.0, x.1)).count();
         info!("world scripts: {map} ({} enemies, {} events, {} ObjActs, {unrun} instructions not run: docs/kb/map-events.md)", def.chars.len(), def.events.len(), def.objacts.len());
-        let run = Run::new_world(def.clone(), 0x5EED_0000 ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9));
+        #[allow(unused_mut)]
+        let mut run = Run::new_world(def.clone(), 0x5EED_0000 ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9));
+        // A loaded save's flags (save.rs): the events start where the save left them.
+        #[cfg(feature = "embed")]
+        for f in crate::save::loaded_flags() {
+            run.set_flag(f, true);
+        }
         let spots = run.def.chars.keys().filter_map(|&id| Some((id, run.place_of(id)?.0))).collect();
         runs.push(WorldRun { run, off: HashSet::new(), spots, moved: HashMap::new() });
     }

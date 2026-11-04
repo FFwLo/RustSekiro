@@ -182,6 +182,18 @@ pub static IDOLS: RwLock<Vec<Idol>> = RwLock::new(Vec::new());
 /// respawn keeps (sekiro-rs `Kit::found_idols`).
 static FOUND: RwLock<std::collections::BTreeSet<i64>> = RwLock::new(std::collections::BTreeSet::new());
 
+/// The lit idols (save.rs EventData; the BonfireWarpParam entity, on the own map -index-1).
+pub fn found_idols() -> Vec<i64> {
+    FOUND.read().map(|f| f.iter().copied().collect()).unwrap_or_default()
+}
+
+/// The lit idols of a loaded save.
+pub fn restore_found(ids: &[i64]) {
+    if let Ok(mut f) = FOUND.write() {
+        f.extend(ids.iter().copied());
+    }
+}
+
 /// Forgets the lit idols (tests: the list is global).
 #[cfg(test)]
 pub(crate) fn forget_found() {
@@ -247,6 +259,8 @@ fn rest(p: &mut crate::player::Player, a: &mut crate::actor::Actor, config: &cra
     p.resurrections = config.player.resurrections;
     p.revive_locked = false;
     p.refill_items = true;
+    // The game writes its save at a rest (save.rs).
+    crate::save::request();
 }
 
 /// Wolf at an idol, from player.rs (before the docking): E at a spot kneels him; while kneeling

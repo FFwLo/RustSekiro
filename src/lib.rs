@@ -93,6 +93,8 @@ mod map_grass;
 mod map_lights;
 #[cfg(feature = "embed")]
 mod menu;
+#[cfg(feature = "embed")]
+pub(crate) mod save;
 #[cfg(feature = "host")]
 mod sandbox;
 #[cfg(feature = "host")]
@@ -214,7 +216,7 @@ pub struct MenuPlugins;
 #[cfg(feature = "embed")]
 impl Plugin for MenuPlugins {
     fn build(&self, app: &mut App) {
-        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, idol_found::IdolFoundPlugin, pickups::PickupsPlugin, drops::DropsPlugin, action_guide::ActionGuidePlugin, shot::ShotPlugin, duel::DuelPlugin));
+        app.add_plugins((menu::MenuPlugin, game_menu::GameMenuPlugin, idol::IdolPlugin, idol_found::IdolFoundPlugin, save::SavePlugin, pickups::PickupsPlugin, drops::DropsPlugin, action_guide::ActionGuidePlugin, shot::ShotPlugin, duel::DuelPlugin));
     }
 }
 pub use player::{Player, CAPSULE_HALF_HEIGHT};
@@ -271,6 +273,7 @@ mod host_app {
             .add_plugins(ui_stage::UiStagePlugin)
             .add_plugins(game_menu::GameMenuPlugin)
             .add_plugins(idol::IdolPlugin)
+            .add_plugins(save::SavePlugin)
             .add_plugins(idol_found::IdolFoundPlugin)
             .add_plugins(sculptor::SculptorPlugin)
             .add_plugins(items::ItemsPlugin)

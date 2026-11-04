@@ -56,3 +56,23 @@ so CI lays the HUD out the same without data. From the movie now (hud.rs):
   draws the mark.
 - Not looked at in a game window (the task forbids starting it): the placement is checked by the
   tests and the numbers only.
+
+## Saves (src/save.rs)
+
+RSekiro's own file, `saves/<slot>.json` under the root (`SHINOBI_SAVE=<slot>`, default `slot0`,
+`0` off; tests never save unless asked). Written at an idol rest (idol.rs `rest` -> `save::request`)
+and on quitting; read on the first Playing screen. Its chunks follow the exe's own save chunks
+(SaveData* RTTI classes, the write / read pair of each, read from the decompiled exe, never copied):
+
+| ours | game chunk | kept |
+|---|---|---|
+| `game` | SaveDataGameDataMan (0x138-byte block) | play time (GameDataMan+0x9c), cycle (+0x70) |
+| `player` | SaveDataPlayerGameData (PlayerGameData serializer: player info 0x180, 0xb0 block, EquipGameData, FaceData, 2 MenuRefSpecialEffect, u32 list) | Vitality, Attack Power, Sen, skill points / exp / level, gourd charges and fill, emblems, resurrection nodes and power, equipment (art, prosthetics, quick items and slot, ninjutsu), items, tools, upgrades, skills, look |
+| `event` | SaveDataEvent (EventFlagMan's own write) | flags on (boss and world scripts), idols lit |
+| `start` | SaveDataStartPointInfo (0x50 bytes from GameMan) | map blocks, position, yaw, last idol |
+
+A loaded save's flags are set on every world script when it starts (enemy/world.rs `load`), its lit
+idols go back into idol.rs's list, and Wolf's place only when the save's map blocks are the run's.
+Gaps: the other chunks (Gaitem, EquipHistory, Gesture, Chr/Obj init states, Ghost, Network,
+Trophy, MenuSystem, options: config.toml) are not kept; which player-info field is Sen and that the
+u32 list is the skills are not checked field by field; loading onto another map needs a new run.
