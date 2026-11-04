@@ -3186,10 +3186,12 @@ fn decide(
     }
     // The quick items' worn effects (items.rs): Wolf's damage rates and the regeneration.
     let [atk, stam, cut, posture_cut] = crate::items::wolf_rates(&p.timed);
-    // And his Attack Power (combat::growth_sp): every hit's HP and posture damage.
+    // And his Attack Power (combat::growth_sp): every hit's HP and posture damage. The HP rate
+    // rides the hit record as whole percent of its product with the items' (combat::record_rate:
+    // AP 16's 4.45 -> 4.44, with Ako's Sugar 4.45 x 1.125 -> 5.00).
     let growth = crate::items::param("SpEffectParam", crate::combat::growth_sp(&config));
     let rate = |k: &str| growth[k].as_f64().unwrap_or(1.0) as f32;
-    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (atk * rate("physicsAttackRate"), stam * rate("staminaAttackRate"), cut, posture_cut);
+    (a.atk_rate, a.stam_atk_rate, a.dmg_cut, a.posture_cut) = (crate::combat::record_rate(rate("physicsAttackRate") * atk), stam * rate("staminaAttackRate"), cut, posture_cut);
     a.item_sp.clear();
     a.item_sp.extend(p.timed.iter().map(|t| t.0));
     // Their maxHpRate (Yashariku's Sugar halves the max HP for its 30 s; the user, 2026-10-18:

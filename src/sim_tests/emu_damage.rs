@@ -105,9 +105,10 @@ pub(crate) fn posture_regen_matches_the_exe() {
 /// HP amounts (FUN_140840eb0 element sum, FUN_140840ce0 attack / defence curve, vfunc 0x228
 /// defences): `combat::hit_hp` keeps (int) of the exe's sum and lifts a positive sum under 1 to 1,
 /// the curve gives the attack back at the snapshot's globals (all 0), and every one of the
-/// snapshot's characters has 0 defence (Sv1 applies none). gap: the sum's flag factors (p13 x1.4,
-/// p14 x p16 or x1.125, p15 x0.8, p17) are not tied to a caller; only the plain sums are compared,
-/// and only non-negative elements (Sv1 has no negative attack; the exe clamps each element at 0).
+/// snapshot's characters has 0 defence (Sv1 applies none). The sum's flag factors (p13 x1.4, p14
+/// x p16 or x1.125, p15 x p16 or x0.8, p17) are `combat::sum_flag_factor` (their callers:
+/// emu_hprate.rs). Only non-negative elements are compared (Sv1 has no negative attack; the exe
+/// clamps each element at 0).
 #[test]
 pub(crate) fn hit_hp_matches_the_exe() {
     let Some(v) = emu_json("damage_hp") else { return };
@@ -125,14 +126,17 @@ pub(crate) fn hit_hp_matches_the_exe() {
     }
     let mut n = 0;
     for s in v["sums"].as_array().unwrap() {
-        let plain = s["p13"].as_i64() == Some(0) && s["p14"].as_i64() == Some(0) && s["p15"].as_i64() == Some(0) && s["p17"].as_f64() == Some(1.0);
         let f = |k: &str| -> Vec<f32> { s[k].as_array().unwrap().iter().map(|x| x.as_f64().unwrap() as f32).collect() };
         let (atk, rate) = (f("atk"), f("rate"));
-        if !plain || atk.iter().any(|a| *a < 0.0) {
+        if atk.iter().any(|a| *a < 0.0) {
             continue;
         }
-        // One of the seven rate arrays (slot) holds `rate`, the others 1.
+        // One of the seven rate arrays (slot) holds `rate`, the others 1; then the flag factors
+        // (combat::sum_flag_factor, p13 x1.4, p14 / p15 with p16, p17).
         let sum: f32 = (0..5).map(|i| atk[i] * rate[i]).sum();
+        let b = |k: &str| s[k].as_i64() == Some(1);
+        let fl = |k: &str| s[k].as_f64().unwrap() as f32;
+        let sum = crate::combat::sum_flag_factor(sum, b("p13"), b("p14"), b("p15"), fl("p16"), fl("p17"));
         let exe = s["out"].as_f64().unwrap() as f32;
         let ours = crate::combat::hit_hp(sum, 1.0);
         if ours != (exe as i32) as f32 {

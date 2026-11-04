@@ -184,8 +184,8 @@ enum Foe {
 }
 
 /// A duel: Wolf's pad, the General, the distance between them, Wolf's posture preset.
-struct Duel {
-    name: String,
+pub(crate) struct Duel {
+    pub(crate) name: String,
     frames: usize,
     pad: Pad,
     foe: Foe,
@@ -196,7 +196,7 @@ struct Duel {
 /// The General's slash (a000_003000) reaches Wolf on frame 42 with Wolf idle (hits_g_open).
 const CONTACT: usize = 42;
 
-fn duels() -> Vec<Duel> {
+pub(crate) fn duels() -> Vec<Duel> {
     let d = |name: &str, frames, pad, foe, dist, wolf_posture| Duel { name: name.into(), frames, pad, foe, dist, wolf_posture };
     let stand = Foe::Stand { guard: false, deflect_at: None };
     let mut v = vec![
@@ -237,7 +237,7 @@ fn pad(p: Pad, f: usize) -> Input {
     }
 }
 
-fn duel(new_emu: &dyn Fn() -> Emu, out: &Path, d: &Duel) {
+pub(crate) fn duel(new_emu: &dyn Fn() -> Emu, out: &Path, d: &Duel) {
     let t = std::time::Instant::now();
     let mut emu = new_emu();
     let w = turn::wolf(&mut emu);

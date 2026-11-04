@@ -37,8 +37,10 @@ right-hand / art weapon has attackBase 40, the Loaded Axe 45. hitSourceType 1 (b
 their own atkPhys.. (the air kick 901: 10; RSekiro gave 0). Attack Power is SpEffect 160000 + level
 ("Player Growth_Core Level N"), every rate equal (1.0 at L0-1, 3.25 at L10, 7.23 at L99 = the
 snapshot): it lands in info +0xb4 / +0xe8-0xf4 and scales the posture amounts (atkStam 15 ->
-108.45), not the entry's HP amounts. gap: where HP gets the level rate (past the entry, the
-defender's sum) is not traced. The General: info +0x70 / +0xa4-0xb0 = 5.36 (his doping), amounts
+108.45), not the entry's HP amounts. HP gets it through the entry's +0x14 .. +0x1c, five int16
+whole percents (FUN_1410b6680, cut toward 0: 7.23 -> 723, AP 16's 4.45 -> 444) that the
+defender's resolve turns into the element sum's first rate array (2026-11-04, kb/damage.md
+"HP rates and flag factors"). The General: info +0x70 / +0xa4-0xb0 = 5.36 (his doping), amounts
 = atk* x 5.36, posture x 5.36, flick = guardAtkRate.
 
 **Cost.** PlayerIns vf63 FUN_140a240e0 = FUN_1408406c0: BehaviorParam stamina x param 0x7e +0x30 x

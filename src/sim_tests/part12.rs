@@ -903,7 +903,8 @@ pub(crate) fn a_sugar_is_eaten_and_raises_the_attack() {
     let (a, p) = q.single(world).unwrap();
     assert_eq!(p.quick_slot, 1);
     assert!(p.timed.iter().any(|(id, left)| *id == 3401 && *left > 25.0), "{:?}", p.timed);
-    assert!((a.atk_rate - 1.125).abs() < 1e-3, "atk_rate {}", a.atk_rate);
+    // 1.125, kept as whole percent on the hit record (combat::record_rate; tools/emu-cases hprate).
+    assert!((a.atk_rate - 1.12).abs() < 1e-3, "atk_rate {}", a.atk_rate);
     assert_eq!(app.world().resource::<crate::items::Used>().0, vec![3400]);
 }
 

@@ -1315,6 +1315,8 @@ pub struct AtkGuard {
     pub all_dir: bool,
     /// isGhostAtk (+0x86 bit 6): no guard unless the defender wears stateInfo 157.
     pub ghost: bool,
+    /// isArrowAtk (+0x86 bit 5): no x1.4 HP on a ChrActionFlag 41 defender (combat::hp_counter).
+    pub arrow: bool,
     /// hitSourceType 1 (+0x84, a body row): the attack info's "power" +0x138 (FUN_14084fc50).
     pub body: bool,
 }
@@ -1338,6 +1340,7 @@ pub fn atk_guard(pc: bool, id: i64) -> Option<AtkGuard> {
                         disable_just_guard: [n("disableJustGuard_vsGuardAttribute0") != 0, n("disableJustGuard_vsGuardAttribute1") != 0],
                         all_dir: n("isAllDirGuard") != 0,
                         ghost: n("isGhostAtk") != 0,
+                        arrow: n("isArrowAtk") != 0,
                         body: n("hitSourceType") == 1,
                     };
                     (id, g)

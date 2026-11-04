@@ -537,7 +537,8 @@ pub(crate) fn npc_guard_chip(combat: &Combat, da: &Actor, contact: &GuardContact
 /// attack_rows_match_the_exe). Wolf's Attack Power (SpEffect 160000 + level, physicsAttackRate ..
 /// staminaAttackRate 1.0 at levels 0-1, 7.23 at 99) is not in the amounts: it lands in the info's
 /// +0xb4 / +0xe8-0xf4 and scales the posture amounts (entry +0x34 atkStam, +0x38 direct, +0x3c
-/// repel) here. gap: where it scales the HP is past the hit entry (the defender's sum), not traced.
+/// repel) here. Its HP part rides the hit entry as whole percent into the defender's sum
+/// (`record_rate`, tools/emu-cases `hprate`).
 pub(crate) fn player_amounts(atk: &Attack, w: &serde_json::Value) -> [f32; 5] {
     if atk.hit_source_type == 1 {
         return [atk.atk_phys, atk.atk_mag, atk.atk_fire, atk.atk_thun, atk.atk_dark];
@@ -562,6 +563,41 @@ pub(crate) fn player_amounts(atk: &Attack, w: &serde_json::Value) -> [f32; 5] {
 pub(crate) fn hit_hp(sum: f32, after: f32) -> f32 {
     let sum = if sum <= 0.0 { 0.0 } else if sum < 1.0 { sum.ceil() } else { sum };
     ((sum * after) as i32) as f32
+}
+
+/// The element sum's flag factors (FUN_140840eb0 p13-p17, after the five elements are added):
+/// x1.4 when `counter` (p13), then, when p14 or p15 is set, x p16 if p16 >= 0, else x1.125 for
+/// p14 or x0.8 for p15, then x p17; applied left to right as the exe does. The resolve
+/// FUN_140b6c880 passes p13 = `hp_counter`, p14 / p15 / p16 = the hit record's +0x16c / +0x16d /
+/// +0x170 and p17 = FUN_140bfb0e0 on the attacker. The record's builders only ever clear the
+/// three (FUN_140997890: 0 / 0 / -1, FUN_140b680c0: 0 / 0 / 1; no other store in the exe) and
+/// p17 is 1 unless the attacker wears SpEffect 9600, which no one does in a fight (tools/emu-cases
+/// `hprate`: 1 with 9600 on too): so Sv1 passes false / false / -1 / 1.
+pub(crate) fn sum_flag_factor(sum: f32, counter: bool, p14: bool, p15: bool, p16: f32, p17: f32) -> f32 {
+    let a = if counter { 1.4 } else { 1.0 };
+    let b = match (p14, p15) {
+        (false, false) => 1.0,
+        _ if p16 >= 0.0 => p16,
+        (true, _) => 1.125,
+        (false, true) => 0.8,
+    };
+    sum * a * b * p17
+}
+
+/// p13 of the element sum (FUN_140b60f10(defender, FUN_140b60ec0(hit))): the defender's
+/// ChrActionFlag 41 ("Vulnerable", FUN_140b51b70 case 0x29 -> module0 +0x70 bit 7) and the attack
+/// not AtkParam isArrowAtk (+0x86 bit 5). Its HP is x1.4 (tools/emu-cases `hprate`, w_flag41 /
+/// g_flag41). No TAE of Wolf or of the 114 exported enemies carries flag 41, so this never fires
+/// in the shipped game; it is kept for faithfulness (the same flag forces the hit stops).
+/// gap: bullets stand for isArrowAtk when the attack's row is not in the param export.
+pub(crate) fn hp_counter(dd: &crate::data::CharData, da: &Actor, atk: &Attack, attacker_pc: bool, bullet: bool) -> bool {
+    let flag41 = !da.anim.is_empty() && dd.flag(&da.anim, da.step(), 41);
+    counter_hit(flag41, crate::data::atk_guard(attacker_pc, atk.atk_param_id).map_or(bullet, |g| g.arrow))
+}
+
+/// FUN_140b60f10's rule: flag 41 on the defender and the attack not isArrowAtk.
+pub(crate) fn counter_hit(flag41: bool, arrow: bool) -> bool {
+    flag41 && !arrow
 }
 
 /// Wolf's reaction to an AtkParam atkBehaviorId (HKS env 334, c0000_define
@@ -1657,6 +1693,18 @@ pub(crate) fn growth_sp(config: &GameConfig) -> i64 {
     160000 + config.player.attack_power.clamp(1, 99) as i64
 }
 
+/// Where Wolf's Attack Power reaches HP (tools/emu-cases `hprate`, kb/damage.md "HP rates and
+/// flag factors"): the attack info's SpEffect rates (FUN_140bf8900: info +0xb4 physical,
+/// +0xe8-0xf4 magic / fire / lightning / dark, the product of the worn rows' physicsAttackRate ..
+/// darkAttackRate and, for a slash, Ako's Sugar's slashAttackRate: 7.23 x 1.125 -> 8.13) are kept in the hit entry as whole percent, (int16)(int)(rate x 100) cut
+/// toward 0 in floats (FUN_1410b6680 -> entry +0x14 .. +0x1c; the physical one also x
+/// FUN_1410b6ff0, 1 here), and the resolve FUN_140b6c880 hands short x 0.01 (x the record's
+/// +0x174.. rates, 1) to the element sum as its first rate array p5. So AP 99's 7.23 is 7.23, but
+/// AP 16's 4.45 (444.99997 in floats) is 4.44: 80 x 4.44 = 355 HP, not 356.
+pub(crate) fn record_rate(rate: f32) -> f32 {
+    ((rate * 100.0) as i32 as i16) as f32 * 0.01
+}
+
 /// The Puppeteer's changeTeamType 15 (220040 "team type change: fascination"; no Paramdex name):
 /// on Wolf's side, against every NPC team the indiscriminate 29 fights (ninjutsu.rs). gap: the
 /// exe's table for 15 is not traced.
@@ -2557,6 +2605,8 @@ fn resolve(
                             Side::Player => player_attack_damage(&combat, &atk, weapon, &da, crate::items::magic_bonus(&aa.item_sp)) * aa.atk_rate,
                             Side::Enemy => npc_hit_damage(&combat, &atk, &da) * aa.atk_rate,
                         } * da.dmg_cut;
+                        // The sum's flag factors (FUN_140840eb0 p13-p17): only p13 can be on.
+                        let dmg = sum_flag_factor(dmg, hp_counter(dd, da, &atk, aa.side == Side::Player, bullet), false, false, -1.0, 1.0);
                         // An armoured enemy (enemy.rs Armor): Wolf's hit lands on the armour part,
                         // which passes on x0.35 HP / x0.5 posture; its prosthetic (Loaded Spear,
                         // EquipParamWeapon 78xxx = Prosthetic Type 11) breaks it.

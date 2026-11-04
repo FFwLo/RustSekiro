@@ -78,6 +78,7 @@ mod emu_air;
 mod emu_fxr2;
 mod emu_hits;
 mod emu_brkwin;
+mod emu_hprate;
 mod emu_animstart;
 mod emu_bullets;
 mod emu_hksstick;

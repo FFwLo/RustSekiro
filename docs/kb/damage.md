@@ -443,11 +443,12 @@ Not covered (gap):
   block (+0x34), with BehaviorParam_PC 105000090 and an empty weapon-info block (FUN_140bfcde0
   needs param_3+8); with no guard id both are 0. Flowing Water's x0.785 / 0.74 does not show
   there, so this is not compared; which outcome and guard rate a hit gets is the guard pilot's.
-- the sum's flag factors (1.4 / 1.125 / 0.8 / p16 / p17) are not tied to callers (likely
-  counter / backstab-style multipliers); negative attack elements (exe clamps each at 0; Sv1 has
+- (the sum's flag factors 1.4 / 1.125 / 0.8 / p16 / p17: tied to their callers 2026-11-04,
+  "HP rates and flag factors" below); negative attack elements (exe clamps each at 0; Sv1 has
   none in its data).
 - the attacker's attack power scaling (player weapon AttackElementCorrect / reinforcement)
-  was not run; Sv1 keeps EquipParamWeapon base x AtkParam correction.
+  was not run; Sv1 keeps EquipParamWeapon base x AtkParam correction. (Attack Power's HP rate:
+  "HP rates and flag factors" below.)
 - posture break itself (FUN_140bd4e20 threshold, what the HKS resets, timers) beyond the TAE 960
   clamp; the setter of the no-regen bit 21.
 
@@ -588,3 +589,52 @@ Not covered (gap):
 - the deflect's travel (the exe's General goes on into his counter a000_003057); the kb module's
   start a frame late (+0x45), already `kb_wait`.
 - the ChrCtrl +0x90 adjuster is not ported or compared (throw alignment and event warps use it).
+## HP rates and flag factors (2026-11-04, rows E12 / E16)
+Emulator pilot `tools/emu-cases hprate` (kb/emulator-pilot.md row "hprate"): the `hits` duels
+w_open (Wolf's slash AtkParam_Pc 5000010, 80 physical, on the standing General) and g_open (the
+General's slash 10200100 on idle Wolf) with three more hooks: the resolve FUN_140b6c880 at entry
+(record fields, pokes), its element sum FUN_140840eb0 at entry (all 17 arguments) and after the
+call (the sum). Writes `extracted/emu/hprate_<case>.json`; test `hp_rates_match_the_exe`
+(src/sim_tests/emu_hprate.rs), and `hit_hp_matches_the_exe` now checks the flagged sums too.
+**Where Attack Power enters HP (E12).** Not in the amounts (80 at every level) and not in the
+player / enemy corrections FUN_140841200 (p11: SpEffect atkPlayerDmgCorrectRate /
+atkEnemyDmgCorrectRate / defEnemyDmgCorrectRate, all 1). The attack info's SpEffect rates
+(FUN_140bf8900: +0xb4 physical, +0xe8-0xf4 magic / fire / lightning / dark) are written into the
+hit entry by FUN_1410b6680 as five int16 whole percents at +0x14 .. +0x1c, (int)(rate x 100) in
+floats, cut toward 0 (the physical one also x FUN_1410b6ff0, 1 here). The resolve hands short x
+0.01 x the record's +0x174.. floats (1) x FUN_1409ea8c0 (1) to the sum as its first rate array p5.
+The rate is the product of the worn rows: the growth row 160000 + level and, for this slash, Ako's
+Sugar's effect 3401 (slashAttackRate 1.125). Cases: AP 99 723 -> 578.4 HP; AP 1 / none 100 -> 80;
+AP 10 3.25 -> 260; AP 16 4.45 -> 444 (4.45 x 100 = 444.99997) -> 355.2; AP 99 + Ako 8.13 -> 650.4;
+AP 16 + Ako 5.006 -> 500 -> 400. 27 of the 99 growth levels (16, 17, 21, 22, 27, 32, ...) lose a
+hundredth this way. The General's p5 is 1 (his doping 5.36 is in his amounts, kb/atkrec.md); p7
+carries the defender's NpcParam cuts (the General's dark 0.6).
+Fixed in Sv1: `combat::record_rate` makes Wolf's `atk_rate` (growth physicsAttackRate x the items'
+rate) whole percent cut toward 0 (player.rs). Before: AP 16 slash 356 HP (exe 355), AP 16 + Ako
+399 (exe 400).
+**The sum's flag factors (E16).** FUN_140840eb0: sum x (p13 ? 1.4 : 1) x (p14 or p15 ? (p16 >= 0 ?
+p16 : p14 ? 1.125 : 0.8) : 1) x p17, left to right (`combat::sum_flag_factor`; the old note "p15
+x0.8" holds only for p16 < 0). The resolve's inputs:
+- p13 = FUN_140b60f10(defender, FUN_140b60ec0(hit)): the defender's module0 +0x70 bit 7 (TAE
+  ChrActionFlag 41 "Vulnerable", FUN_140b51b70 case 0x29) and the attack's AtkParam not isArrowAtk
+  (+0x86 bit 5). Run: Wolf's slash on a flag-41 General 578.4 -> 809.76 (x1.4), with isArrowAtk
+  578.4; the General's slash on a flag-41 Wolf likewise. The same flag forces both hit stops. No
+  TAE of Wolf or of the 114 exported enemies carries ChrActionFlag 41: never on in the shipped
+  game. Sv1: `combat::hp_counter` / `counter_hit` on the main hit (was not applied).
+- p14 / p15 / p16 = the hit record's +0x16c / +0x16d bytes and +0x170 float. Every builder only
+  clears them (record ctor FUN_140997890: 0 / 0 / -1; FUN_140b680c0: 0 / 0 / 1.0); a scan of the
+  exe's stores finds no other write. Run: always 0 / 0 / -1; poked 1 / 0 / -1 -> x1.125 (650.7),
+  0 / 1 / -1 -> x0.8 (462.72), 1 / 0 / 0.5 -> x0.5. Dead in 1.6.0; Sv1 passes off / off / -1.
+- p17 = FUN_140bfb0e0(the attacker's SpEffects, a short of the record's +0x11c weapon row, 0): 1
+  unless the attacker wears SpEffect 9600 (stateInfo 116 "Aging_resistant scraping") and a session
+  singleton (DAT_143d948e8) exists; with 9600 added in the run it stays 1 (578.4). Sv1 passes 1.
+- p12 = an int of the defender's data module (FUN_1405a9e40: 11836 the General, 1120 Wolf); the
+  attack / defence curve ignores it at defence 0.
+- FUN_1410b6ff0's physical factor, FUN_1409ea8c0 and the record's +0x174.. rates were 1 in every
+  case; what makes them other than 1 is not traced.
+- p17's formula FUN_1408485e0 when 9600 and the singleton are both there (not reachable on the
+  snapshot); the other rate arrays p6 / p8 / p9 / p10 (FUN_140bfa2f0, vfunc 0x238 / 0x240,
+  FUN_140bfa100) were 1 apart from the cuts; Ako's Sugar on a non-slash attack (Sv1 uses its slash
+  rate for every attribute, items.rs) and the other elements' shorts with non-physical damage are
+  not run.
+- Sv1's guard chips (`guard_chip`, `npc_guard_chip`) do not take the x1.4 (flag 41 is never on).
