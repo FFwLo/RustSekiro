@@ -112,7 +112,6 @@ character turns out to run exe code of its own, add an `E` row for that part.
 
 | ID | Area | Needs | Who | Task | Notes |
 |----|------|-------|-----|------|-------|
-| E6 | emu | | open | Other prosthetics (shuriken, firecracker, flame vent, umbrella): find how the exe switches Wolf's tool in the emulator copy (writing PlayerGameData +0x5ec did not), then check the bullet spawns against `prosthetic.rs` | harness `items`; kb/frame-coverage.md |
 
 ## P: port gaps
 
@@ -173,3 +172,4 @@ character turns out to run exe code of its own, add an `E` row for that part.
 | E14 | FFwLo/claude | 2026-11-04 | chr push: stepping side lifted 0.3 m and stops at 0.950 m, other never shoved; humanoids pass, dogs block (pushmove); rim leave by the two-sphere ground check (collide_rimleave) |
 | E15 | FFwLo/claude | 2026-11-04 | no NPC +1000 fallback in the exe (2,710 keys run); exporter keys fixed, art anims fall back to 5000 (params_keys) |
 | E30 | FFwLo/claude | 2026-11-04 | 130 cited param fields confirmed read by the cited exe code, no swaps (EMU_PARAM_READS) |
+| E6 | FFwLo/claude | 2026-11-04 | tool equip via ChrAsm handle; 12 tools frame by frame; interval children and bullet life fixed; victim levels (spear hits once) |
